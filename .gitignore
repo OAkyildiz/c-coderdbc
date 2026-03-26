@@ -1,3 +1,7 @@
 **/build*
 loc-test*
 .vscode
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
