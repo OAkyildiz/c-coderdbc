@@ -341,7 +341,7 @@ class CoderDbcGui(ttk.Window):
         ttk.Separator(self, orient=HORIZONTAL).pack(fill=X)
 
         # Main split: left = tree, right = settings+log
-        paned = ttk.PanedWindow(self, orient=HORIZONTAL)
+        paned = ttk.Panedwindow(self, orient=HORIZONTAL)
         paned.pack(fill=BOTH, expand=True, padx=6, pady=6)
 
         left = ttk.Frame(paned, padding=4)
