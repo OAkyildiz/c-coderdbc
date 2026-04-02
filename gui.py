@@ -428,7 +428,7 @@ class CoderDbcGui(ttk.Window):
         self._progress = ttk.Progressbar(
             parent, bootstyle="success-striped", mode="indeterminate"
         )
-        self._progress.pack(fill=X)
+        # Hidden until generation actually starts; shown only while running.
 
     def _build_log_tab(self, parent: ttk.Frame) -> None:
         text_frame = ttk.Frame(parent)
@@ -740,6 +740,7 @@ class CoderDbcGui(ttk.Window):
                 return
 
         self._gen_btn.configure(state="disabled")
+        self._progress.pack(fill=X)
         self._progress.start(10)
         threading.Thread(
             target=self._run_generation,
@@ -814,6 +815,7 @@ class CoderDbcGui(ttk.Window):
 
     def _generation_done(self) -> None:
         self._progress.stop()
+        self._progress.pack_forget()
         self._gen_btn.configure(state="normal")
 
     # ── File dialogs ──────────────────────────────────────────────────────────
