@@ -213,9 +213,6 @@ class CoderDbcGui(ttk.Window):
         self._opt_skip_sig_names   = tk.BooleanVar(value=False)
         self._opt_skip_validate    = tk.BooleanVar(value=False)
 
-        # ── File write options ───────────────────────────────────────────────
-        self._opt_rw = tk.BooleanVar(value=True)   # overwrite existing files
-
         # ── Internal state ──────────────────────────────────────────────────
         self._db: Optional[cantools.database.Database] = None
         self._messages: List[cantools.database.can.Message] = []
@@ -413,15 +410,6 @@ class CoderDbcGui(ttk.Window):
             ttk.Checkbutton(
                 parent, text=label, variable=var, bootstyle="warning-round-toggle"
             ).pack(anchor=W, pady=2)
-
-        ttk.Separator(parent).pack(fill=X, pady=8)
-
-        ttk.Checkbutton(
-            parent,
-            text="Overwrite existing files",
-            variable=self._opt_rw,
-            bootstyle="secondary-round-toggle",
-        ).pack(anchor=W, pady=2)
 
         ttk.Separator(parent).pack(fill=X, pady=8)
 
@@ -737,6 +725,20 @@ class CoderDbcGui(ttk.Window):
             messagebox.showwarning("Missing", "Please specify a driver name.")
             return
 
+        # Check for file conflicts on the main thread, before starting the worker.
+        out = Path(out_dir)
+        h_name = f"{drv_name}.h"
+        c_name = f"{drv_name}.c"
+        conflicts = [f for f in (h_name, c_name) if (out / f).exists()]
+        if conflicts:
+            names = "\n  • ".join(conflicts)
+            if not messagebox.askyesno(
+                "Files Already Exist",
+                f"The following file(s) already exist in:\n{out_dir}\n\n  • {names}\n\nOverwrite?",
+                parent=self,
+            ):
+                return
+
         self._gen_btn.configure(state="disabled")
         self._progress.start(10)
         threading.Thread(
@@ -790,18 +792,14 @@ class CoderDbcGui(ttk.Window):
                 header = _strip_validate_funcs(header)
                 source = _strip_validate_funcs(source)
 
-            # Write output files
+            # Write output files (any conflict was already confirmed in _generate)
             out = Path(out_dir)
             out.mkdir(parents=True, exist_ok=True)
-            overwrite = self._opt_rw.get()
 
             for fname, content in [(h_name, header), (c_name, source)]:
                 fpath = out / fname
-                if fpath.exists() and not overwrite:
-                    self._log(f"⚠  Skipping existing file: {fpath}", tag="warning")
-                else:
-                    fpath.write_text(content, encoding="utf-8")
-                    self._log(f"  Written: {fpath}", tag="info")
+                fpath.write_text(content, encoding="utf-8")
+                self._log(f"  Written: {fpath}", tag="info")
 
             self._log(
                 f"✅  Generation complete!  Output → {out_dir}", tag="success"
