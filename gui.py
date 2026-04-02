@@ -541,7 +541,7 @@ class CoderDbcGui(ttk.Window):
                 g_iid = f"group::{group_name}"
                 self._tree.insert(
                     "", END, iid=g_iid,
-                    text=f"{chk}  {group_name}  ({len(visible)} messages)",
+                    text=f"{chk}  {group_name}  ({len(visible)} frames → 1 function set)",
                     values=("", "", total_sigs, ""),
                     open=False,
                     tags=("group",),
@@ -650,7 +650,7 @@ class CoderDbcGui(ttk.Window):
             else CHECKBOX_OFF
         )
         n = len(msgs)
-        self._tree.item(g_iid, text=f"{chk}  {group_name}  ({n} messages)")
+        self._tree.item(g_iid, text=f"{chk}  {group_name}  ({n} frames → 1 function set)")
 
     def _refresh_parent_group(self, msg: "cantools.database.can.Message") -> None:
         for group_name, msgs in self._groups.items():
@@ -694,8 +694,14 @@ class CoderDbcGui(ttk.Window):
     def _update_summary(self) -> None:
         total = len(self._messages)
         sel = sum(1 for m in self._messages if m.name in self._selected)
+        func_sets = sum(
+            1 for msgs in self._groups.values()
+            if any(m.name in self._selected for m in msgs)
+        )
         self._summary_var.set(f"{total} messages  |  {sel} selected")
-        self._sel_summary.set(f"{sel} / {total} messages selected for generation")
+        self._sel_summary.set(
+            f"{sel} / {total} messages selected  →  {func_sets} function set(s) will be generated"
+        )
 
     # ── Code generation ───────────────────────────────────────────────────────
 
@@ -704,8 +710,17 @@ class CoderDbcGui(ttk.Window):
             messagebox.showwarning("No DBC", "Please load a DBC file first.")
             return
 
-        selected = [m for m in self._messages if m.name in self._selected]
-        if not selected:
+        # For each group, emit only ONE representative message (the first selected
+        # member).  This is the whole point of grouping: 111 radar frames with
+        # identical signal layouts produce ONE pack/unpack function set, not 111.
+        # Ungrouped (single-message) entries behave exactly as before.
+        representatives: List["cantools.database.can.Message"] = []
+        for msgs in sorted(self._groups.values(), key=lambda v: min(m.frame_id for m in v)):
+            rep = next((m for m in msgs if m.name in self._selected), None)
+            if rep is not None:
+                representatives.append(rep)
+
+        if not representatives:
             messagebox.showwarning(
                 "Nothing Selected",
                 "Select at least one message to generate code for.",
@@ -726,7 +741,7 @@ class CoderDbcGui(ttk.Window):
         self._progress.start(10)
         threading.Thread(
             target=self._run_generation,
-            args=(selected, out_dir, drv_name),
+            args=(representatives, out_dir, drv_name),
             daemon=True,
         ).start()
 
@@ -744,7 +759,7 @@ class CoderDbcGui(ttk.Window):
             node = self._node_name.get().strip() or None
 
             self._log(
-                f"Generating C code for {len(selected)} message(s)…", tag="info"
+                f"Generating C code for {len(selected)} function set(s)…", tag="info"
             )
 
             header, source, _, _ = _ct_generate(
