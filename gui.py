@@ -158,7 +158,7 @@ def detect_groups(
     groups: Dict[str, List] = {}
     for prefix, msgs in bucket.items():
         if len(msgs) >= min_size:
-            groups[prefix] = sorted(msgs, key=lambda x: x.name)
+            groups[prefix] = sorted(msgs, key=lambda x: x.frame_id)
         else:
             for msg in msgs:
                 groups[msg.name] = [msg]
@@ -185,7 +185,7 @@ class CoderDbcGui(ttk.Window):
     def __init__(self) -> None:
         super().__init__(
             title=self.APP_TITLE,
-            themename="cosmo",
+            themename="darkly",
             size=(1200, 800),
             minsize=(860, 600),
         )
@@ -315,7 +315,7 @@ class CoderDbcGui(ttk.Window):
             bootstyle="primary",
         )
         self._tree.heading("#0", text="  Name")
-        self._tree.heading("id", text="ID (dec)")
+        self._tree.heading("id", text="ID (hex)")
         self._tree.heading("dlc", text="DLC")
         self._tree.heading("signals", text="Signals")
         self._tree.heading("transmitter", text="Transmitter")
@@ -492,7 +492,7 @@ class CoderDbcGui(ttk.Window):
             self._log(f"ERROR parsing DBC file: {exc}", tag="danger")
             return
 
-        self._messages = list(self._db.messages)
+        self._messages = sorted(self._db.messages, key=lambda m: m.frame_id)
         self._selected = {m.name for m in self._messages}
 
         # Start with a flat (one group per message) layout
@@ -517,7 +517,9 @@ class CoderDbcGui(ttk.Window):
 
         filter_text = self._search_var.get().lower()
 
-        for group_name, msgs in self._groups.items():
+        for group_name, msgs in sorted(
+            self._groups.items(), key=lambda kv: min(m.frame_id for m in kv[1])
+        ):
             visible = [
                 m for m in msgs
                 if not filter_text or filter_text in m.name.lower()
@@ -561,7 +563,7 @@ class CoderDbcGui(ttk.Window):
         self._tree.insert(
             parent_iid, END, iid=m_iid,
             text=f"{chk}  {msg.name}",
-            values=(msg.frame_id, msg.length, len(msg.signals), sender),
+            values=(f"0x{msg.frame_id:03X}", msg.length, len(msg.signals), sender),
             tags=("msg",),
         )
         self._tree_items[m_iid] = ("msg", msg)
@@ -591,6 +593,12 @@ class CoderDbcGui(ttk.Window):
 
         # Only react to clicks in the tree/name column (#0)
         if self._tree.identify_column(event.x) != "#0":
+            return
+
+        # Ignore clicks on the expand/collapse indicator (▶ / ▼).
+        # Without this guard, every open/close of a group would inadvertently
+        # toggle its checkbox — leaving the user back where they started.
+        if self._tree.identify_element(event.x, event.y) == "Treeview.indicator":
             return
 
         kind, data = self._tree_items[iid]
