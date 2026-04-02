@@ -1,6 +1,63 @@
-# CODERDBC 
-  
-Coderdbc is a CLI utility for generating C code from DBC CAN matrix files
+# C-CoderDBC
+
+C-CoderDBC generates C pack/unpack code from DBC CAN matrix files.
+It ships two interfaces: a **command-line tool** (`coderdbc`) and a **graphical
+interface** (`gui.py`) built on [cantools](https://github.com/cantools/cantools).
+
+---
+
+## Graphical Interface (GUI)
+
+`gui.py` is a Python/Tkinter front-end that lets you visually explore a DBC
+file and then drive the `coderdbc` binary — without touching the command line.
+
+### Features
+
+- **Full DBC preview** — messages and their signals in a collapsible tree,
+  powered by [cantools](https://github.com/cantools/cantools) (extended frame
+  IDs, multiplexed signals, value tables, attributes all handled correctly).
+- **Message selection** — check/uncheck individual messages or entire groups;
+  only selected messages are included in the generated code.
+- **Auto-grouping** — similarly-named messages (e.g. `RadarObj_0` … `RadarObj_39`)
+  are collapsed into a single group row with a tri-state checkbox.
+- **Live search / filter** — type to narrow the tree in real time.
+- **Settings panel** — output directory, driver name, coderdbc binary path, and
+  all CLI flags as toggle switches.
+- **Background generation** — the coderdbc process runs off the UI thread; a
+  progress bar and colour-coded log pane show what's happening.
+- **Filtered DBC round-trip via cantools** — when only a subset of messages is
+  selected, a filtered DBC is written by re-encoding from cantools' object graph
+  (not line-by-line text surgery), so the output is always well-formed.
+
+### Requirements
+
+```
+Python ≥ 3.9
+ttkbootstrap ≥ 1.10.0
+cantools
+```
+
+Install Python dependencies:
+
+```sh
+pip install -r requirements.txt
+```
+
+### Running the GUI
+
+Build the C++ binary first (see [Build and run](#build-and-run) below), then:
+
+```sh
+python3 gui.py
+```
+
+On first launch the GUI auto-detects the `coderdbc` binary under `build/`.
+If it isn't found a warning is shown in the log pane and you can set the path
+manually in the **Settings** tab.
+
+---
+
+## Command-line tool (`coderdbc`)
 
 ### Features
 - ***Pack*** and ***Unpack*** functions for conversion signals to CAN payload raw data and vice verse
