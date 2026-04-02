@@ -8,26 +8,27 @@ interface** (`gui.py`) built on [cantools](https://github.com/cantools/cantools)
 
 ## Graphical Interface (GUI)
 
-`gui.py` is a Python/Tkinter front-end that lets you visually explore a DBC
-file and then drive the `coderdbc` binary — without touching the command line.
+`gui.py` is a Python/Tkinter front-end that generates C source files directly
+through the [cantools](https://github.com/cantools/cantools) library — no
+external binary required.
 
 ### Features
 
 - **Full DBC preview** — messages and their signals in a collapsible tree,
-  powered by [cantools](https://github.com/cantools/cantools) (extended frame
-  IDs, multiplexed signals, value tables, attributes all handled correctly).
+  powered by cantools (extended frame IDs, multiplexed signals, value tables,
+  attributes all handled correctly).
 - **Message selection** — check/uncheck individual messages or entire groups;
   only selected messages are included in the generated code.
 - **Auto-grouping** — similarly-named messages (e.g. `RadarObj_0` … `RadarObj_39`)
   are collapsed into a single group row with a tri-state checkbox.
 - **Live search / filter** — type to narrow the tree in real time.
-- **Settings panel** — output directory, driver name, coderdbc binary path, and
-  all CLI flags as toggle switches.
-- **Background generation** — the coderdbc process runs off the UI thread; a
-  progress bar and colour-coded log pane show what's happening.
-- **Filtered DBC round-trip via cantools** — when only a subset of messages is
-  selected, a filtered DBC is written by re-encoding from cantools' object graph
-  (not line-by-line text surgery), so the output is always well-formed.
+- **cantools options** — floating-point encode/decode, bit fields, float vs
+  double, rounding, and per-node filtering exposed as toggle switches.
+- **Output filter** — optionally strip LENGTH / IS_EXTENDED / cycle-time
+  `#defines`, frame/signal name macros, and validate (`is_in_range`) functions
+  from the generated files.
+- **Background generation** — runs off the UI thread; a progress bar and
+  colour-coded log pane show what's happening.
 
 ### Requirements
 
@@ -45,15 +46,9 @@ pip install -r requirements.txt
 
 ### Running the GUI
 
-Build the C++ binary first (see [Build and run](#build-and-run) below), then:
-
 ```sh
 python3 gui.py
 ```
-
-On first launch the GUI auto-detects the `coderdbc` binary under `build/`.
-If it isn't found a warning is shown in the log pane and you can set the path
-manually in the **Settings** tab.
 
 ---
 
