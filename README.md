@@ -75,3 +75,21 @@ Help information with main instructions about using the tool will be printed
 ## generation options
 
   There are several available generation option, use '-help' option for details
+
+## Web GUI (coderdbc.com)
+
+A free web-based GUI front-end for this tool is available at **https://coderdbc.com**.
+
+### How the web GUI works
+
+The web application is a completely **separate service** from the C++ CLI binary. It does not call into the C++ generator library directly. Instead it operates as a thin wrapper that:
+
+1. **Parses the DBC file independently** — the web app contains its own DBC parsing logic (server- or client-side). When you upload a DBC file the GUI reads it and displays the full list of messages, signals, and ECU nodes without ever calling the `coderdbc` binary.
+
+2. **Handles all UI concerns in the web layer** — message previewing, signal inspection, ECU/node group selection, and option toggling all happen inside the web application before any code generation is triggered. No additions to the C++ API are needed for these features because they are handled entirely by the front-end.
+
+3. **Invokes the CLI as a subprocess** — once the user has made their selections and clicks *Generate*, the web back-end assembles the appropriate `coderdbc` command-line arguments (e.g. `-dbc`, `-out`, `-drvname`, `-nodeutils`, `-rw`, `-driverdir`, `-gendate`, etc.) and runs the binary. The generated source files are then packaged and returned to the user for download.
+
+### Why the C++ code is unchanged
+
+Because the web GUI delegates all interactive concerns (browsing, filtering, previewing) to a separate parsing layer and communicates with the generator solely through the existing CLI interface, **no changes to the C++ generator API are required**. The CLI already exposes every knob needed (driver name, output path, node utilities, rewrite flag, etc.) as command-line flags. The GUI is simply a convenient way to construct and dispatch those flags without using a terminal.
