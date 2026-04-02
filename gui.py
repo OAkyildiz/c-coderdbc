@@ -18,7 +18,7 @@ Features
 
 Requirements
 ------------
-    pip install ttkbootstrap>=1.10.0
+    pip install ttkbootstrap>=1.10.0 cantools
 
 Usage
 -----
@@ -37,7 +37,6 @@ import subprocess
 import tempfile
 import threading
 from collections import defaultdict
-from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Dict, List, Optional, Set, Tuple
 
@@ -48,6 +47,17 @@ except ImportError:
     print(
         "ERROR: ttkbootstrap is required.\n"
         "Install it with:  pip install ttkbootstrap>=1.10.0",
+        file=sys.stderr,
+    )
+    sys.exit(1)
+
+try:
+    import cantools
+    import cantools.database
+except ImportError:
+    print(
+        "ERROR: cantools is required.\n"
+        "Install it with:  pip install cantools",
         file=sys.stderr,
     )
     sys.exit(1)
@@ -65,151 +75,12 @@ GROUP_MIN_SIZE = 2       # Minimum messages required to form an auto-group
 APP_VERSION = "1.0"
 
 
-# ── Data Classes ───────────────────────────────────────────────────────────────
-
-@dataclass
-class Signal:
-    """Represents one CAN signal parsed from a DBC file."""
-    name: str
-    start_bit: int
-    bit_length: int
-    byte_order: str   # 'little_endian' or 'big_endian'
-    value_type: str   # 'unsigned' or 'signed'
-    factor: float
-    offset: float
-    raw_line: str
-
-
-@dataclass
-class Message:
-    """Represents one CAN message parsed from a DBC file."""
-    msg_id: int
-    name: str
-    dlc: int
-    transmitter: str
-    signals: List[Signal] = field(default_factory=list)
-    selected: bool = True
-
-
-# ── DBC Parser ─────────────────────────────────────────────────────────────────
-
-class DbcParser:
-    """
-    Lightweight DBC file parser used for GUI preview and filtered output.
-
-    This is intentionally minimal — it extracts only the information needed
-    to populate the tree view and to write a filtered copy of the DBC file.
-    The ``coderdbc`` binary performs the authoritative full parse for code
-    generation.
-    """
-
-    # BO_ <id> <name> : <dlc> <transmitter>
-    _MSG_RE = re.compile(r"^BO_\s+(\d+)\s+(\w+)\s*:\s*(\d+)\s+(\S+)")
-
-    # SG_ <name> [M | m<n>] : <start>|<len>@<order><sign> (<factor>,<offset>) [<min>|<max>] "<unit>"
-    # The optional multiplexor indicator is either "M" (multiplexer) or "m<digits>" (multiplexed).
-    _SIG_RE = re.compile(
-        r"^\s+SG_\s+(\w+)\s*(?:[Mm]\d*)?\s*:\s*"
-        r"(\d+)\|(\d+)@([01])([+-])\s*"
-        r"\(([^,]+),([^)]+)\)\s*\[[^\]]*\]\s*\"[^\"]*\""
-    )
-
-    # BO_TX_BU_ or any other line starting with BO_ but not a message definition
-    _MSG_START_RE = re.compile(r"^BO_\s+(\d+)\s+")
-
-    def parse(self, filepath: str) -> List[Message]:
-        """Parse *filepath* and return a list of :class:`Message` objects."""
-        messages: List[Message] = []
-        current: Optional[Message] = None
-
-        with open(filepath, "r", encoding="utf-8", errors="replace") as fh:
-            for raw_line in fh:
-                m = self._MSG_RE.match(raw_line)
-                if m:
-                    if current is not None:
-                        messages.append(current)
-                    current = Message(
-                        msg_id=int(m.group(1)),
-                        name=m.group(2),
-                        dlc=int(m.group(3)),
-                        transmitter=m.group(4),
-                    )
-                    continue
-
-                if current is not None:
-                    s = self._SIG_RE.match(raw_line)
-                    if s:
-                        try:
-                            sig = Signal(
-                                name=s.group(1),
-                                start_bit=int(s.group(2)),
-                                bit_length=int(s.group(3)),
-                                byte_order="little_endian" if s.group(4) == "1" else "big_endian",
-                                value_type="signed" if s.group(5) == "-" else "unsigned",
-                                factor=float(s.group(6)),
-                                offset=float(s.group(7)),
-                                raw_line=raw_line.rstrip(),
-                            )
-                            current.signals.append(sig)
-                        except ValueError:
-                            pass
-
-        if current is not None:
-            messages.append(current)
-
-        return messages
-
-    def write_filtered(
-        self,
-        src_path: str,
-        selected_ids: Set[int],
-        dst_path: str,
-    ) -> None:
-        """
-        Copy *src_path* to *dst_path*, keeping only ``BO_`` blocks whose
-        message ID is in *selected_ids*.  All non-message sections
-        (``NS_``, ``BS_``, ``BU_``, ``CM_``, ``BA_``, ``VAL_``, …) are
-        preserved unchanged so that the ``coderdbc`` binary receives a
-        well-formed DBC file.
-        """
-        with open(src_path, "r", encoding="utf-8", errors="replace") as fh:
-            lines = fh.readlines()
-
-        output: List[str] = []
-        in_msg_block = False
-        skip_block = False
-
-        for line in lines:
-            m = self._MSG_START_RE.match(line)
-            if m:
-                in_msg_block = True
-                skip_block = int(m.group(1)) not in selected_ids
-            elif in_msg_block:
-                stripped = line.strip()
-                # A BO_ block ends on a blank line OR when a non-indented line
-                # is encountered (DBC signals always start with whitespace).
-                if stripped == "" or (stripped and not line[0].isspace()):
-                    in_msg_block = False
-                    if skip_block:
-                        skip_block = False
-                        if stripped == "":
-                            # Drop the trailing blank line of the skipped block
-                            continue
-                        # Non-blank top-level line: fall through to output it
-
-            if not skip_block:
-                output.append(line)
-
-        with open(dst_path, "w", encoding="utf-8") as fh:
-            fh.writelines(output)
-
-
 # ── Auto-grouping ──────────────────────────────────────────────────────────────
 
 def detect_groups(
-    messages: List[Message],
+    messages: List["cantools.database.Message"],
     min_size: int = GROUP_MIN_SIZE,
-) -> Dict[str, List[Message]]:
+) -> Dict[str, List["cantools.database.Message"]]:
     """
     Detect groups of similarly-named messages.
 
@@ -218,10 +89,10 @@ def detect_groups(
     ``<prefix>``.  Groups with fewer than *min_size* members are kept as
     individual entries.
 
-    Returns an ``OrderedDict``-style plain dict: ``group_name → [Message, …]``.
+    Returns a plain dict: ``group_name → [Message, …]``.
     """
     _NUM_SUFFIX = re.compile(r"^(.*?)_?(\d+)$")
-    bucket: Dict[str, List[Message]] = defaultdict(list)
+    bucket: Dict[str, List] = defaultdict(list)
 
     for msg in messages:
         m = _NUM_SUFFIX.match(msg.name)
@@ -231,7 +102,7 @@ def detect_groups(
         else:
             bucket[msg.name].append(msg)
 
-    groups: Dict[str, List[Message]] = {}
+    groups: Dict[str, List] = {}
     for prefix, msgs in bucket.items():
         if len(msgs) >= min_size:
             groups[prefix] = sorted(msgs, key=lambda x: x.name)
@@ -285,11 +156,13 @@ class CoderDbcGui(ttk.Window):
         self._opt_nofmon = tk.BooleanVar(value=False)
 
         # ── Internal state ──────────────────────────────────────────────────
-        self._messages: List[Message] = []
-        self._groups: Dict[str, List[Message]] = {}
-        # Maps tree-item IID → ("group", group_name) | ("msg", Message)
+        self._db: Optional[cantools.database.Database] = None
+        self._messages: List[cantools.database.can.Message] = []
+        self._groups: Dict[str, List[cantools.database.can.Message]] = {}
+        # Selected message names (cantools message names are unique within a db)
+        self._selected: Set[str] = set()
+        # Maps tree-item IID → ("group", group_name) | ("msg", cantools Message)
         self._tree_items: Dict[str, Tuple[str, object]] = {}
-        self._parser = DbcParser()
 
         # ── Build UI ────────────────────────────────────────────────────────
         self._build_ui()
@@ -563,10 +436,13 @@ class CoderDbcGui(ttk.Window):
     def _load_dbc(self, path: str) -> None:
         self._log(f"Loading: {path}", tag="info")
         try:
-            self._messages = self._parser.parse(path)
+            self._db = cantools.database.load_file(path)
         except Exception as exc:
             self._log(f"ERROR parsing DBC file: {exc}", tag="danger")
             return
+
+        self._messages = list(self._db.messages)
+        self._selected = {m.name for m in self._messages}
 
         # Start with a flat (one group per message) layout
         self._groups = {msg.name: [msg] for msg in self._messages}
@@ -601,8 +477,8 @@ class CoderDbcGui(ttk.Window):
             is_group = len(msgs) > 1
 
             if is_group:
-                all_sel = all(m.selected for m in visible)
-                any_sel = any(m.selected for m in visible)
+                all_sel = all(m.name in self._selected for m in visible)
+                any_sel = any(m.name in self._selected for m in visible)
                 chk = (
                     CHECKBOX_ON if all_sel
                     else CHECKBOX_PARTIAL if any_sel
@@ -626,25 +502,27 @@ class CoderDbcGui(ttk.Window):
         self._tree.tag_configure("group",  font=("", 9, "bold"))
         self._tree.tag_configure("signal", foreground="#888888")
 
-    def _insert_message(self, parent_iid: str, msg: Message) -> None:
-        chk = CHECKBOX_ON if msg.selected else CHECKBOX_OFF
-        m_iid = f"msg::{msg.msg_id}"
+    def _insert_message(self, parent_iid: str, msg: "cantools.database.can.Message") -> None:
+        selected = msg.name in self._selected
+        chk = CHECKBOX_ON if selected else CHECKBOX_OFF
+        m_iid = f"msg::{msg.frame_id}"
+        sender = msg.senders[0] if msg.senders else ""
         self._tree.insert(
             parent_iid, END, iid=m_iid,
             text=f"{chk}  {msg.name}",
-            values=(msg.msg_id, msg.dlc, len(msg.signals), msg.transmitter),
+            values=(msg.frame_id, msg.length, len(msg.signals), sender),
             tags=("msg",),
         )
         self._tree_items[m_iid] = ("msg", msg)
 
         for sig in msg.signals:
-            s_iid = f"sig::{msg.msg_id}::{sig.name}"
+            s_iid = f"sig::{msg.frame_id}::{sig.name}"
             bo = "LE" if sig.byte_order == "little_endian" else "BE"
-            vt = "S" if sig.value_type == "signed" else "U"
+            vt = "S" if sig.is_signed else "U"
             self._tree.insert(
                 m_iid, END, iid=s_iid,
                 text=f"    {sig.name}",
-                values=(f"{sig.start_bit}|{sig.bit_length}", bo, vt, ""),
+                values=(f"{sig.start}|{sig.length}", bo, vt, ""),
                 tags=("signal",),
             )
 
@@ -672,21 +550,30 @@ class CoderDbcGui(ttk.Window):
 
         self._update_summary()
 
-    def _toggle_message(self, msg: Message) -> None:
-        msg.selected = not msg.selected
-        chk = CHECKBOX_ON if msg.selected else CHECKBOX_OFF
-        m_iid = f"msg::{msg.msg_id}"
+    def _toggle_message(self, msg: "cantools.database.can.Message") -> None:
+        if msg.name in self._selected:
+            self._selected.discard(msg.name)
+        else:
+            self._selected.add(msg.name)
+        selected = msg.name in self._selected
+        chk = CHECKBOX_ON if selected else CHECKBOX_OFF
+        m_iid = f"msg::{msg.frame_id}"
         if self._tree.exists(m_iid):
             self._tree.item(m_iid, text=f"{chk}  {msg.name}")
         self._refresh_parent_group(msg)
 
     def _toggle_group(self, group_name: str) -> None:
         msgs = self._groups[group_name]
-        new_sel = not all(m.selected for m in msgs)
+        all_sel = all(m.name in self._selected for m in msgs)
+        if all_sel:
+            for msg in msgs:
+                self._selected.discard(msg.name)
+        else:
+            for msg in msgs:
+                self._selected.add(msg.name)
         for msg in msgs:
-            msg.selected = new_sel
-            chk = CHECKBOX_ON if new_sel else CHECKBOX_OFF
-            m_iid = f"msg::{msg.msg_id}"
+            chk = CHECKBOX_ON if msg.name in self._selected else CHECKBOX_OFF
+            m_iid = f"msg::{msg.frame_id}"
             if self._tree.exists(m_iid):
                 self._tree.item(m_iid, text=f"{chk}  {msg.name}")
         self._refresh_group_item(group_name)
@@ -696,8 +583,8 @@ class CoderDbcGui(ttk.Window):
         if not self._tree.exists(g_iid):
             return
         msgs = self._groups[group_name]
-        all_sel = all(m.selected for m in msgs)
-        any_sel = any(m.selected for m in msgs)
+        all_sel = all(m.name in self._selected for m in msgs)
+        any_sel = any(m.name in self._selected for m in msgs)
         chk = (
             CHECKBOX_ON if all_sel
             else CHECKBOX_PARTIAL if any_sel
@@ -706,7 +593,7 @@ class CoderDbcGui(ttk.Window):
         n = len(msgs)
         self._tree.item(g_iid, text=f"{chk}  {group_name}  ({n} messages)")
 
-    def _refresh_parent_group(self, msg: Message) -> None:
+    def _refresh_parent_group(self, msg: "cantools.database.can.Message") -> None:
         for group_name, msgs in self._groups.items():
             if msg in msgs and len(msgs) > 1:
                 self._refresh_group_item(group_name)
@@ -733,14 +620,12 @@ class CoderDbcGui(ttk.Window):
     # ── Selection helpers ─────────────────────────────────────────────────────
 
     def _select_all(self) -> None:
-        for msg in self._messages:
-            msg.selected = True
+        self._selected = {m.name for m in self._messages}
         self._populate_tree()
         self._update_summary()
 
     def _deselect_all(self) -> None:
-        for msg in self._messages:
-            msg.selected = False
+        self._selected.clear()
         self._populate_tree()
         self._update_summary()
 
@@ -749,7 +634,7 @@ class CoderDbcGui(ttk.Window):
 
     def _update_summary(self) -> None:
         total = len(self._messages)
-        sel = sum(1 for m in self._messages if m.selected)
+        sel = sum(1 for m in self._messages if m.name in self._selected)
         self._summary_var.set(f"{total} messages  |  {sel} selected")
         self._sel_summary.set(f"{sel} / {total} messages selected for generation")
 
@@ -760,7 +645,7 @@ class CoderDbcGui(ttk.Window):
             messagebox.showwarning("No DBC", "Please load a DBC file first.")
             return
 
-        selected = [m for m in self._messages if m.selected]
+        selected = [m for m in self._messages if m.name in self._selected]
         if not selected:
             messagebox.showwarning(
                 "Nothing Selected",
@@ -801,7 +686,7 @@ class CoderDbcGui(ttk.Window):
 
     def _run_generation(
         self,
-        selected: List[Message],
+        selected: List["cantools.database.can.Message"],
         dbc_path: str,
         out_dir: str,
         drv_name: str,
@@ -809,22 +694,25 @@ class CoderDbcGui(ttk.Window):
     ) -> None:
         tmp_path: Optional[str] = None
         try:
-            selected_ids = {m.msg_id for m in selected}
-            all_ids = {m.msg_id for m in self._messages}
-
-            if selected_ids == all_ids:
+            if len(selected) == len(self._messages):
                 work_dbc = dbc_path
                 self._log(
                     f"All {len(selected)} messages selected — using original DBC.",
                     tag="info",
                 )
             else:
+                # Build a filtered database using cantools and write it as DBC.
+                # cantools.database.Database re-encodes from its own parsed
+                # representation, guaranteeing a well-formed output file.
+                filtered_db = cantools.database.Database(messages=selected)
                 fd, tmp_path = tempfile.mkstemp(suffix=".dbc")
                 os.close(fd)
-                self._parser.write_filtered(dbc_path, selected_ids, tmp_path)
+                cantools.database.dump_file(
+                    filtered_db, tmp_path, database_format="dbc"
+                )
                 work_dbc = tmp_path
                 self._log(
-                    f"Filtered DBC created "
+                    f"Filtered DBC written via cantools "
                     f"({len(selected)}/{len(self._messages)} messages).",
                     tag="info",
                 )
