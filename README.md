@@ -76,20 +76,43 @@ Help information with main instructions about using the tool will be printed
 
   There are several available generation option, use '-help' option for details
 
-## Web GUI (coderdbc.com)
+## GUI (`gui.py`)
 
-A free web-based GUI front-end for this tool is available at **https://coderdbc.com**.
+A Python desktop GUI is provided in `gui.py` as a graphical front-end to the `coderdbc` CLI binary. It requires [ttkbootstrap](https://ttkbootstrap.readthedocs.io/):
 
-### How the web GUI works
+```sh
+pip install ttkbootstrap>=1.10.0
+python3 gui.py
+```
 
-The web application is a completely **separate service** from the C++ CLI binary. It does not call into the C++ generator library directly. Instead it operates as a thin wrapper that:
+Build the C++ binary first if you haven't already (see **Build and run** above). The GUI will auto-detect it under `build/coderdbc`; if not found you can point to it manually via the *Settings* tab.
 
-1. **Parses the DBC file independently** — the web app contains its own DBC parsing logic (server- or client-side). When you upload a DBC file the GUI reads it and displays the full list of messages, signals, and ECU nodes without ever calling the `coderdbc` binary.
+### How it works
 
-2. **Handles all UI concerns in the web layer** — message previewing, signal inspection, ECU/node group selection, and option toggling all happen inside the web application before any code generation is triggered. No additions to the C++ API are needed for these features because they are handled entirely by the front-end.
+The GUI is a **Python/tkinter** application (`gui.py`). It does **not** extend or modify the C++ code — the C++ generator API is completely unchanged. All interactive features are implemented in Python and the generator is invoked via the existing CLI interface:
 
-3. **Invokes the CLI as a subprocess** — once the user has made their selections and clicks *Generate*, the web back-end assembles the appropriate `coderdbc` command-line arguments (e.g. `-dbc`, `-out`, `-drvname`, `-nodeutils`, `-rw`, `-driverdir`, `-gendate`, etc.) and runs the binary. The generated source files are then packaged and returned to the user for download.
+**DBC parsing for preview (Python, no C++ involvement)**
 
-### Why the C++ code is unchanged
+The GUI includes a lightweight Python DBC parser (`DbcParser` class in `gui.py`). When you open a `.dbc` file this parser reads it directly in Python and populates the tree view with all messages and their signals. The `coderdbc` binary is not called at this stage.
 
-Because the web GUI delegates all interactive concerns (browsing, filtering, previewing) to a separate parsing layer and communicates with the generator solely through the existing CLI interface, **no changes to the C++ generator API are required**. The CLI already exposes every knob needed (driver name, output path, node utilities, rewrite flag, etc.) as command-line flags. The GUI is simply a convenient way to construct and dispatch those flags without using a terminal.
+**Message preview**
+
+Parsed messages are shown in a resizable tree. Each row shows the message ID, DLC, number of signals, and transmitter. Expanding a message row reveals its individual signals (start bit, length, byte order, value type).
+
+**Group selection**
+
+Messages can be selected or deselected individually. An *Auto-Group* button detects sets of similarly-named messages (e.g. 40 radar-object frames sharing a common name prefix + numeric suffix) and collapses them into a single collapsible group with a tri-state checkbox (all / partial / none selected). A live search bar filters the tree in real time. *Select All* and *Deselect All* buttons are also provided.
+
+**Filtered code generation**
+
+When you click *Generate C Code* the GUI:
+
+1. Determines which message IDs are selected.
+2. If all messages are selected, the original `.dbc` file is passed straight to the binary.
+3. If only a subset is selected, `DbcParser.write_filtered()` copies the original file to a temporary `.dbc` that contains only the chosen `BO_` blocks (all other DBC sections such as `NS_`, `BU_`, `CM_`, `BA_`, `VAL_` are preserved unchanged). This filtered file is what gets passed to the generator, so only pack/unpack functions for selected messages are emitted.
+4. The GUI assembles a `coderdbc` command from the paths and option toggles in the *Settings* tab (all standard CLI flags are exposed: `-rw`, `-nodeutils`, `-driverdir`, `-gendate`, `-noconfig`, `-noinc`, `-nofmon`) and runs it as a subprocess in a background thread.
+5. Progress is shown via an indeterminate progress bar and a colour-coded output log pane.
+
+### Why no C++ API changes were needed
+
+All features that appear "interactive" — browsing, previewing, filtering, group detection — are handled entirely in Python before the generator is called. The generator receives only a standard `.dbc` file and standard CLI flags, which is exactly what it already supports. No additions to the C++ API are required.
