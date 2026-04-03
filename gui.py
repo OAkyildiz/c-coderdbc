@@ -352,7 +352,7 @@ class CoderDbcGui(ttk.Window):
         self.style.configure("Treeview", font=("", 11))
         self.style.configure("Treeview.Heading", font=("", 10, "bold"))
 
-        cols = ("sel", "dlc", "signals", "transmitter")
+        cols = ("sel", "name", "dlc", "signals", "transmitter")
         self._tree = ttk.Treeview(
             tree_container,
             columns=cols,
@@ -360,17 +360,19 @@ class CoderDbcGui(ttk.Window):
             selectmode="browse",
             bootstyle="primary",
         )
-        self._tree.heading("#0", text="ID (hex)   Name")
+        self._tree.heading("#0", text="")
         self._tree.heading(
             "sel", text=CHECKBOX_OFF,
             command=self._toggle_all_heading,
         )
+        self._tree.heading("name", text="ID (hex)   Name")
         self._tree.heading("dlc", text="DLC")
         self._tree.heading("signals", text="Signals")
         self._tree.heading("transmitter", text="Transmitter")
 
-        self._tree.column("#0", width=310, minwidth=180)
+        self._tree.column("#0", width=20, minwidth=20, stretch=False)
         self._tree.column("sel", width=30, minwidth=30, anchor=CENTER, stretch=False)
+        self._tree.column("name", width=290, minwidth=180)
         self._tree.column("dlc", width=50, anchor=CENTER, minwidth=40)
         self._tree.column("signals", width=60, anchor=CENTER, minwidth=40)
         self._tree.column("transmitter", width=110, anchor=CENTER, minwidth=70)
@@ -598,8 +600,8 @@ class CoderDbcGui(ttk.Window):
                 g_iid = f"group::{group_name}"
                 self._tree.insert(
                     "", END, iid=g_iid,
-                    text=f"0x{min_id:03X}+  {group_name}  ({len(visible)} frames → 1 function set)",
-                    values=(chk, "", total_sigs, ""),
+                    text="",
+                    values=(chk, f"0x{min_id:03X}+  {group_name}  ({len(visible)} frames → 1 function set)", "", total_sigs, ""),
                     open=False,
                     tags=("group",),
                 )
@@ -620,8 +622,8 @@ class CoderDbcGui(ttk.Window):
         sender = msg.senders[0] if msg.senders else ""
         self._tree.insert(
             parent_iid, END, iid=m_iid,
-            text=f"0x{msg.frame_id:03X}  {msg.name}",
-            values=(chk, msg.length, len(msg.signals), sender),
+            text="",
+            values=(chk, f"0x{msg.frame_id:03X}  {msg.name}", msg.length, len(msg.signals), sender),
             tags=("msg",),
         )
         self._tree_items[m_iid] = ("msg", msg)
@@ -632,8 +634,8 @@ class CoderDbcGui(ttk.Window):
             vt = "S" if sig.is_signed else "U"
             self._tree.insert(
                 m_iid, END, iid=s_iid,
-                text=f"    {sig.name}  [{sig.start}|{sig.length}]",
-                values=("", bo, vt, ""),
+                text="",
+                values=("", f"    {sig.name}  [{sig.start}|{sig.length}]", bo, vt, ""),
                 tags=("signal",),
             )
 
@@ -660,8 +662,8 @@ class CoderDbcGui(ttk.Window):
         if not iid or iid not in self._tree_items:
             return
 
-        # React to clicks in the tree/name column (#0) or the checkbox column (#1).
-        if self._tree.identify_column(event.x) not in ("#0", "#1"):
+        # React to clicks in the sel column (#1) or the name column (#2).
+        if self._tree.identify_column(event.x) not in ("#1", "#2"):
             return
 
         # Ignore clicks caused by the native expand/collapse indicator (▶ / ▼).
