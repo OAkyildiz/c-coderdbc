@@ -359,6 +359,7 @@ class CoderDbcGui(ttk.Window):
         )
         self._tree.heading(
             "sel", text=CHECKBOX_OFF,
+            anchor=W,
             command=self._toggle_all_heading,
         )
         self._tree.heading("name", text="ID (hex)   Name")
@@ -366,7 +367,7 @@ class CoderDbcGui(ttk.Window):
         self._tree.heading("signals", text="Signals")
         self._tree.heading("transmitter", text="Transmitter")
 
-        self._tree.column("sel", width=30, minwidth=30, anchor=CENTER, stretch=False)
+        self._tree.column("sel", width=32, minwidth=32, anchor=W, stretch=False)
         self._tree.column("name", width=310, minwidth=180)
         self._tree.column("dlc", width=50, anchor=CENTER, minwidth=40)
         self._tree.column("signals", width=60, anchor=CENTER, minwidth=40)
@@ -608,10 +609,12 @@ class CoderDbcGui(ttk.Window):
         chk = CHECKBOX_ON if selected else CHECKBOX_OFF
         m_iid = f"msg::{msg.frame_id}"
         sender = msg.senders[0] if msg.senders else ""
+        has_sigs = bool(msg.signals)
+        prefix = "▶  " if has_sigs else "   "
         self._tree.insert(
             parent_iid, END, iid=m_iid,
-            values=(chk, f"0x{msg.frame_id:03X}  {msg.name}", msg.length, len(msg.signals), sender),
-            open=True,
+            values=(chk, f"{prefix}0x{msg.frame_id:03X}  {msg.name}", msg.length, len(msg.signals), sender),
+            open=False,
             tags=("msg",),
         )
         self._tree_items[m_iid] = ("msg", msg)
@@ -650,6 +653,10 @@ class CoderDbcGui(ttk.Window):
             # Sel column click → toggle selection of all messages in group
             self._toggle_group(str(data))
         elif kind == "msg":
+            msg = data  # type: ignore[assignment]
+            if col == "#2" and msg.signals:  # type: ignore[union-attr]
+                self._toggle_msg_expand(msg)  # type: ignore[arg-type]
+                return
             self._toggle_message(data)  # type: ignore[arg-type]
 
         self._update_summary()
@@ -668,6 +675,16 @@ class CoderDbcGui(ttk.Window):
             g_iid, "name",
             f"{indicator}  0x{min_id:03X}+  {group_name}  ({len(msgs)} frames → 1 function set)",
         )
+
+    def _toggle_msg_expand(self, msg: "cantools.database.can.Message") -> None:
+        """Flip the open/close state of a message row and update its ▶/▼ indicator."""
+        m_iid = f"msg::{msg.frame_id}"
+        if not self._tree.exists(m_iid):
+            return
+        is_open = bool(self._tree.item(m_iid, "open"))
+        self._tree.item(m_iid, open=not is_open)
+        indicator = "▼  " if not is_open else "▶  "
+        self._tree.set(m_iid, "name", f"{indicator}0x{msg.frame_id:03X}  {msg.name}")
 
     def _toggle_message(self, msg: "cantools.database.can.Message") -> None:
         if msg.name in self._selected:
