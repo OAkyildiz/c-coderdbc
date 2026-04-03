@@ -352,7 +352,7 @@ class CoderDbcGui(ttk.Window):
         self.style.configure("Treeview", font=("", 11))
         self.style.configure("Treeview.Heading", font=("", 10, "bold"))
 
-        cols = ("dlc", "signals", "transmitter")
+        cols = ("sel", "dlc", "signals", "transmitter")
         self._tree = ttk.Treeview(
             tree_container,
             columns=cols,
@@ -360,15 +360,17 @@ class CoderDbcGui(ttk.Window):
             selectmode="browse",
             bootstyle="primary",
         )
+        self._tree.heading("#0", text="ID (hex)   Name")
         self._tree.heading(
-            "#0", text=f"{CHECKBOX_OFF}  Name",
+            "sel", text=CHECKBOX_OFF,
             command=self._toggle_all_heading,
         )
         self._tree.heading("dlc", text="DLC")
         self._tree.heading("signals", text="Signals")
         self._tree.heading("transmitter", text="Transmitter")
 
-        self._tree.column("#0", width=340, minwidth=180)
+        self._tree.column("#0", width=310, minwidth=180)
+        self._tree.column("sel", width=30, minwidth=30, anchor=CENTER, stretch=False)
         self._tree.column("dlc", width=50, anchor=CENTER, minwidth=40)
         self._tree.column("signals", width=60, anchor=CENTER, minwidth=40)
         self._tree.column("transmitter", width=110, anchor=CENTER, minwidth=70)
@@ -596,8 +598,8 @@ class CoderDbcGui(ttk.Window):
                 g_iid = f"group::{group_name}"
                 self._tree.insert(
                     "", END, iid=g_iid,
-                    text=f"{chk}  0x{min_id:03X}+  {group_name}  ({len(visible)} frames → 1 function set)",
-                    values=("", total_sigs, ""),
+                    text=f"0x{min_id:03X}+  {group_name}  ({len(visible)} frames → 1 function set)",
+                    values=(chk, "", total_sigs, ""),
                     open=False,
                     tags=("group",),
                 )
@@ -618,8 +620,8 @@ class CoderDbcGui(ttk.Window):
         sender = msg.senders[0] if msg.senders else ""
         self._tree.insert(
             parent_iid, END, iid=m_iid,
-            text=f"{chk}  0x{msg.frame_id:03X}  {msg.name}",
-            values=(msg.length, len(msg.signals), sender),
+            text=f"0x{msg.frame_id:03X}  {msg.name}",
+            values=(chk, msg.length, len(msg.signals), sender),
             tags=("msg",),
         )
         self._tree_items[m_iid] = ("msg", msg)
@@ -631,7 +633,7 @@ class CoderDbcGui(ttk.Window):
             self._tree.insert(
                 m_iid, END, iid=s_iid,
                 text=f"    {sig.name}  [{sig.start}|{sig.length}]",
-                values=(bo, vt, ""),
+                values=("", bo, vt, ""),
                 tags=("signal",),
             )
 
@@ -658,8 +660,8 @@ class CoderDbcGui(ttk.Window):
         if not iid or iid not in self._tree_items:
             return
 
-        # Only react to clicks in the tree/name column (#0)
-        if self._tree.identify_column(event.x) != "#0":
+        # React to clicks in the tree/name column (#0) or the checkbox column (#1).
+        if self._tree.identify_column(event.x) not in ("#0", "#1"):
             return
 
         # Ignore clicks caused by the native expand/collapse indicator (▶ / ▼).
@@ -686,7 +688,7 @@ class CoderDbcGui(ttk.Window):
         chk = CHECKBOX_ON if selected else CHECKBOX_OFF
         m_iid = f"msg::{msg.frame_id}"
         if self._tree.exists(m_iid):
-            self._tree.item(m_iid, text=f"{chk}  0x{msg.frame_id:03X}  {msg.name}")
+            self._tree.set(m_iid, "sel", chk)
         self._refresh_parent_group(msg)
         self._refresh_heading()
 
@@ -703,7 +705,7 @@ class CoderDbcGui(ttk.Window):
             chk = CHECKBOX_ON if msg.name in self._selected else CHECKBOX_OFF
             m_iid = f"msg::{msg.frame_id}"
             if self._tree.exists(m_iid):
-                self._tree.item(m_iid, text=f"{chk}  0x{msg.frame_id:03X}  {msg.name}")
+                self._tree.set(m_iid, "sel", chk)
         self._refresh_group_item(group_name)
         self._refresh_heading()
 
@@ -721,7 +723,7 @@ class CoderDbcGui(ttk.Window):
         )
         n = len(msgs)
         min_id = min(m.frame_id for m in msgs)
-        self._tree.item(g_iid, text=f"{chk}  0x{min_id:03X}+  {group_name}  ({n} frames → 1 function set)")
+        self._tree.set(g_iid, "sel", chk)
 
     def _refresh_parent_group(self, msg: "cantools.database.can.Message") -> None:
         for group_name, msgs in self._groups.items():
@@ -760,7 +762,7 @@ class CoderDbcGui(ttk.Window):
         self._update_summary()
 
     def _toggle_all_heading(self) -> None:
-        """Toggle all messages on/off when the #0 heading checkbox is clicked."""
+        """Toggle all messages on/off when the sel column heading checkbox is clicked."""
         if not self._messages:
             return
         all_sel = all(m.name in self._selected for m in self._messages)
@@ -772,7 +774,7 @@ class CoderDbcGui(ttk.Window):
         self._update_summary()
 
     def _refresh_heading(self) -> None:
-        """Update the #0 heading checkbox to reflect the current selection state."""
+        """Update the sel column heading checkbox to reflect the current selection state."""
         if not self._messages:
             chk = CHECKBOX_OFF
         elif all(m.name in self._selected for m in self._messages):
@@ -781,7 +783,7 @@ class CoderDbcGui(ttk.Window):
             chk = CHECKBOX_PARTIAL
         else:
             chk = CHECKBOX_OFF
-        self._tree.heading("#0", text=f"{chk}  Name")
+        self._tree.heading("sel", text=chk)
 
     def _apply_filter(self) -> None:
         self._populate_tree()
