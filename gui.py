@@ -221,6 +221,8 @@ class CoderDbcGui(ttk.Window):
         self._selected: Set[str] = set()
         # Maps tree-item IID → ("group", group_name) | ("msg", cantools Message)
         self._tree_items: Dict[str, Tuple[str, object]] = {}
+        # Set in _on_tree_press; read in _on_tree_click to detect indicator hits
+        self._pressed_on_indicator: bool = False
 
         # ── Build UI ────────────────────────────────────────────────────────
         self._build_ui()
@@ -303,6 +305,11 @@ class CoderDbcGui(ttk.Window):
         tree_container = ttk.Frame(parent)
         tree_container.pack(fill=BOTH, expand=True, pady=(4, 0))
 
+        # Increase Treeview row font from the default (~9 pt) to 11 pt so
+        # message and signal names are more legible.
+        self.style.configure("Treeview", font=("", 11))
+        self.style.configure("Treeview.Heading", font=("", 10, "bold"))
+
         cols = ("id", "dlc", "signals", "transmitter")
         self._tree = ttk.Treeview(
             tree_container,
@@ -333,6 +340,7 @@ class CoderDbcGui(ttk.Window):
         tree_container.rowconfigure(0, weight=1)
         tree_container.columnconfigure(0, weight=1)
 
+        self._tree.bind("<Button-1>", self._on_tree_press)
         self._tree.bind("<ButtonRelease-1>", self._on_tree_click)
 
     # ── Right panel — Settings + Log ─────────────────────────────────────────
@@ -426,9 +434,10 @@ class CoderDbcGui(ttk.Window):
         self._gen_btn.pack(fill=X, pady=(8, 4))
 
         self._progress = ttk.Progressbar(
-            parent, bootstyle="success-striped", mode="indeterminate"
+            parent, bootstyle="secondary", mode="determinate"
         )
-        # Hidden until generation actually starts; shown only while running.
+        self._progress.pack(fill=X, pady=(0, 4))
+        # Starts at 0 (greyed/empty); becomes animated during generation.
 
     def _build_log_tab(self, parent: ttk.Frame) -> None:
         text_frame = ttk.Frame(parent)
@@ -540,7 +549,7 @@ class CoderDbcGui(ttk.Window):
             else:
                 self._insert_message("", msgs[0])
 
-        self._tree.tag_configure("group",  font=("", 9, "bold"))
+        self._tree.tag_configure("group",  font=("", 11, "bold"))
         self._tree.tag_configure("signal", foreground="#888888")
 
     def _insert_message(self, parent_iid: str, msg: "cantools.database.can.Message") -> None:
@@ -569,6 +578,17 @@ class CoderDbcGui(ttk.Window):
 
     # ── Tree interaction ──────────────────────────────────────────────────────
 
+    def _on_tree_press(self, event: "tk.Event[ttk.Treeview]") -> None:
+        """Record at press-time whether the click landed on the expand/collapse indicator.
+
+        The Treeview re-renders between Button-1 and ButtonRelease-1, so
+        identify_element() in the release handler can no longer detect the
+        indicator reliably.  We capture it here instead and store the result.
+        """
+        self._pressed_on_indicator = (
+            self._tree.identify_element(event.x, event.y) == "Treeview.indicator"
+        )
+
     def _on_tree_click(self, event: "tk.Event[ttk.Treeview]") -> None:
         """Toggle message/group selection when the user clicks the name column."""
         region = self._tree.identify_region(event.x, event.y)
@@ -584,9 +604,10 @@ class CoderDbcGui(ttk.Window):
             return
 
         # Ignore clicks on the expand/collapse indicator (▶ / ▼).
-        # Without this guard, every open/close of a group would inadvertently
-        # toggle its checkbox — leaving the user back where they started.
-        if self._tree.identify_element(event.x, event.y) == "Treeview.indicator":
+        # We use the flag set by _on_tree_press because by the time
+        # ButtonRelease-1 fires, the tree has re-rendered and
+        # identify_element() no longer sees "Treeview.indicator".
+        if getattr(self, "_pressed_on_indicator", False):
             return
 
         kind, data = self._tree_items[iid]
@@ -740,7 +761,7 @@ class CoderDbcGui(ttk.Window):
                 return
 
         self._gen_btn.configure(state="disabled")
-        self._progress.pack(fill=X)
+        self._progress.configure(bootstyle="success-striped", mode="indeterminate")
         self._progress.start(10)
         threading.Thread(
             target=self._run_generation,
@@ -815,7 +836,8 @@ class CoderDbcGui(ttk.Window):
 
     def _generation_done(self) -> None:
         self._progress.stop()
-        self._progress.pack_forget()
+        self._progress.configure(bootstyle="secondary", mode="determinate")
+        self._progress["value"] = 0
         self._gen_btn.configure(state="normal")
 
     # ── File dialogs ──────────────────────────────────────────────────────────
