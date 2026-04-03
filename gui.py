@@ -352,7 +352,7 @@ class CoderDbcGui(ttk.Window):
         self.style.configure("Treeview", font=("", 11))
         self.style.configure("Treeview.Heading", font=("", 10, "bold"))
 
-        cols = ("id", "dlc", "signals", "transmitter")
+        cols = ("dlc", "signals", "transmitter")
         self._tree = ttk.Treeview(
             tree_container,
             columns=cols,
@@ -360,14 +360,15 @@ class CoderDbcGui(ttk.Window):
             selectmode="browse",
             bootstyle="primary",
         )
-        self._tree.heading("#0", text="  Name")
-        self._tree.heading("id", text="ID (hex)")
+        self._tree.heading(
+            "#0", text=f"{CHECKBOX_OFF}  ID (hex)   Name",
+            command=self._toggle_all_heading,
+        )
         self._tree.heading("dlc", text="DLC")
         self._tree.heading("signals", text="Signals")
         self._tree.heading("transmitter", text="Transmitter")
 
-        self._tree.column("#0", width=250, minwidth=150)
-        self._tree.column("id", width=90, anchor=CENTER, minwidth=60)
+        self._tree.column("#0", width=340, minwidth=180)
         self._tree.column("dlc", width=50, anchor=CENTER, minwidth=40)
         self._tree.column("signals", width=60, anchor=CENTER, minwidth=40)
         self._tree.column("transmitter", width=110, anchor=CENTER, minwidth=70)
@@ -590,12 +591,13 @@ class CoderDbcGui(ttk.Window):
                     else CHECKBOX_PARTIAL if any_sel
                     else CHECKBOX_OFF
                 )
+                min_id = min(m.frame_id for m in visible)
                 total_sigs = sum(len(m.signals) for m in visible)
                 g_iid = f"group::{group_name}"
                 self._tree.insert(
                     "", END, iid=g_iid,
-                    text=f"{chk}  {group_name}  ({len(visible)} frames → 1 function set)",
-                    values=("", "", total_sigs, ""),
+                    text=f"{chk}  0x{min_id:03X}+  {group_name}  ({len(visible)} frames → 1 function set)",
+                    values=("", total_sigs, ""),
                     open=False,
                     tags=("group",),
                 )
@@ -607,6 +609,7 @@ class CoderDbcGui(ttk.Window):
 
         self._tree.tag_configure("group",  font=("", 11, "bold"))
         self._tree.tag_configure("signal", foreground="#888888")
+        self._refresh_heading()
 
     def _insert_message(self, parent_iid: str, msg: "cantools.database.can.Message") -> None:
         selected = msg.name in self._selected
@@ -615,8 +618,8 @@ class CoderDbcGui(ttk.Window):
         sender = msg.senders[0] if msg.senders else ""
         self._tree.insert(
             parent_iid, END, iid=m_iid,
-            text=f"{chk}  {msg.name}",
-            values=(f"0x{msg.frame_id:03X}", msg.length, len(msg.signals), sender),
+            text=f"{chk}  0x{msg.frame_id:03X}  {msg.name}",
+            values=(msg.length, len(msg.signals), sender),
             tags=("msg",),
         )
         self._tree_items[m_iid] = ("msg", msg)
@@ -627,8 +630,8 @@ class CoderDbcGui(ttk.Window):
             vt = "S" if sig.is_signed else "U"
             self._tree.insert(
                 m_iid, END, iid=s_iid,
-                text=f"    {sig.name}",
-                values=(f"{sig.start}|{sig.length}", bo, vt, ""),
+                text=f"    {sig.name}  [{sig.start}|{sig.length}]",
+                values=(bo, vt, ""),
                 tags=("signal",),
             )
 
@@ -683,8 +686,9 @@ class CoderDbcGui(ttk.Window):
         chk = CHECKBOX_ON if selected else CHECKBOX_OFF
         m_iid = f"msg::{msg.frame_id}"
         if self._tree.exists(m_iid):
-            self._tree.item(m_iid, text=f"{chk}  {msg.name}")
+            self._tree.item(m_iid, text=f"{chk}  0x{msg.frame_id:03X}  {msg.name}")
         self._refresh_parent_group(msg)
+        self._refresh_heading()
 
     def _toggle_group(self, group_name: str) -> None:
         msgs = self._groups[group_name]
@@ -699,8 +703,9 @@ class CoderDbcGui(ttk.Window):
             chk = CHECKBOX_ON if msg.name in self._selected else CHECKBOX_OFF
             m_iid = f"msg::{msg.frame_id}"
             if self._tree.exists(m_iid):
-                self._tree.item(m_iid, text=f"{chk}  {msg.name}")
+                self._tree.item(m_iid, text=f"{chk}  0x{msg.frame_id:03X}  {msg.name}")
         self._refresh_group_item(group_name)
+        self._refresh_heading()
 
     def _refresh_group_item(self, group_name: str) -> None:
         g_iid = f"group::{group_name}"
@@ -715,7 +720,8 @@ class CoderDbcGui(ttk.Window):
             else CHECKBOX_OFF
         )
         n = len(msgs)
-        self._tree.item(g_iid, text=f"{chk}  {group_name}  ({n} frames → 1 function set)")
+        min_id = min(m.frame_id for m in msgs)
+        self._tree.item(g_iid, text=f"{chk}  0x{min_id:03X}+  {group_name}  ({n} frames → 1 function set)")
 
     def _refresh_parent_group(self, msg: "cantools.database.can.Message") -> None:
         for group_name, msgs in self._groups.items():
@@ -752,6 +758,30 @@ class CoderDbcGui(ttk.Window):
         self._selected.clear()
         self._populate_tree()
         self._update_summary()
+
+    def _toggle_all_heading(self) -> None:
+        """Toggle all messages on/off when the #0 heading checkbox is clicked."""
+        if not self._messages:
+            return
+        all_sel = all(m.name in self._selected for m in self._messages)
+        if all_sel:
+            self._selected.clear()
+        else:
+            self._selected = {m.name for m in self._messages}
+        self._populate_tree()
+        self._update_summary()
+
+    def _refresh_heading(self) -> None:
+        """Update the #0 heading checkbox to reflect the current selection state."""
+        if not self._messages:
+            chk = CHECKBOX_OFF
+        elif all(m.name in self._selected for m in self._messages):
+            chk = CHECKBOX_ON
+        elif any(m.name in self._selected for m in self._messages):
+            chk = CHECKBOX_PARTIAL
+        else:
+            chk = CHECKBOX_OFF
+        self._tree.heading("#0", text=f"{chk}  ID (hex)   Name")
 
     def _apply_filter(self) -> None:
         self._populate_tree()
