@@ -128,6 +128,46 @@ def _strip_validate_funcs(text: str) -> str:
     return text
 
 
+def _replace_identifier_prefix(
+    header: str, source: str, drv_name: str, new_prefix: str
+) -> Tuple[str, str]:
+    """Replace (or strip) the cantools database-name identifier prefix.
+
+    cantools prefixes every generated symbol with ``database_name``.  This
+    function replaces that prefix with *new_prefix* in all identifiers of the
+    generated header and source, then restores the include guard (which must
+    stay derived from the output file name, not from the identifier prefix).
+
+    *new_prefix* = ``""`` strips the prefix entirely so symbols become
+    ``msgname_pack`` instead of ``dbname_msgname_pack``.
+    """
+    from_lower = re.escape(drv_name.lower()) + "_"
+    from_upper = re.escape(drv_name.upper()) + "_"
+    to_lower = (new_prefix.lower() + "_") if new_prefix else ""
+    to_upper = (new_prefix.upper() + "_") if new_prefix else ""
+
+    # Negative lookbehind: only replace at the start of an identifier token.
+    pat_lower = r"(?<![a-zA-Z0-9_])" + from_lower
+    pat_upper = r"(?<![a-zA-Z0-9_])" + from_upper
+
+    for pat, repl in [(pat_upper, to_upper), (pat_lower, to_lower)]:
+        header = re.sub(pat, repl, header)
+        source = re.sub(pat, repl, source)
+
+    # Restore the include guard.  cantools built it as
+    # f'{database_name.upper()}_H'; after our replacement it is
+    # f'{to_upper}H' (e.g. '' + 'H' = 'H' when prefix is blank).
+    # We always want the guard to reflect the output file name (drv_name.h).
+    orig_guard = drv_name.upper() + "_H"
+    new_guard = to_upper + "H"
+    if new_guard != orig_guard:
+        header = header.replace(f"#ifndef {new_guard}\n", f"#ifndef {orig_guard}\n", 1)
+        header = header.replace(f"#define {new_guard}\n", f"#define {orig_guard}\n", 1)
+        header = header.replace(f"/* {new_guard} */",     f"/* {orig_guard} */")
+
+    return header, source
+
+
 # ── Auto-grouping ──────────────────────────────────────────────────────────────
 
 def detect_groups(
@@ -194,6 +234,7 @@ class CoderDbcGui(ttk.Window):
         self._dbc_path = tk.StringVar()
         self._out_path = tk.StringVar()
         self._drv_name = tk.StringVar()
+        self._sym_prefix = tk.StringVar()   # identifier prefix (blank = strip entirely)
         self._search_var = tk.StringVar()
         self._summary_var = tk.StringVar(value="No DBC file loaded")
         self._sel_summary = tk.StringVar(value="0 messages selected")
@@ -381,7 +422,13 @@ class CoderDbcGui(ttk.Window):
 
         # Driver name
         ttk.Label(parent, text="Driver name").pack(anchor=W)
-        ttk.Entry(parent, textvariable=self._drv_name).pack(fill=X, pady=(2, 8))
+        ttk.Entry(parent, textvariable=self._drv_name).pack(fill=X, pady=(2, 6))
+
+        # Identifier prefix
+        ttk.Label(
+            parent, text="Identifier prefix  (blank = no prefix in symbol names)"
+        ).pack(anchor=W)
+        ttk.Entry(parent, textvariable=self._sym_prefix).pack(fill=X, pady=(2, 8))
 
         ttk.Separator(parent).pack(fill=X, pady=8)
 
@@ -747,6 +794,7 @@ class CoderDbcGui(ttk.Window):
 
         out_dir = self._out_path.get().strip()
         drv_name = self._drv_name.get().strip()
+        sym_prefix = self._sym_prefix.get().strip()
 
         if not out_dir:
             messagebox.showwarning("Missing", "Please specify an output directory.")
@@ -774,7 +822,7 @@ class CoderDbcGui(ttk.Window):
         self._progress.start(10)
         threading.Thread(
             target=self._run_generation,
-            args=(representatives, out_dir, drv_name),
+            args=(representatives, out_dir, drv_name, sym_prefix),
             daemon=True,
         ).start()
 
@@ -783,6 +831,7 @@ class CoderDbcGui(ttk.Window):
         selected: List["cantools.database.can.Message"],
         out_dir: str,
         drv_name: str,
+        sym_prefix: str,
     ) -> None:
         try:
             # Build a filtered in-memory database from the selected messages.
@@ -807,6 +856,13 @@ class CoderDbcGui(ttk.Window):
                 node_name=node,
                 use_round=self._opt_use_round.get(),
             )
+
+            # Post-process: replace identifier prefix if the user specified one
+            # different from the driver name (or blank = strip entirely).
+            if sym_prefix != drv_name:
+                header, source = _replace_identifier_prefix(
+                    header, source, drv_name, sym_prefix
+                )
 
             # Post-process: strip disabled header sections
             if self._opt_skip_length.get():
