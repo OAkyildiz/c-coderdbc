@@ -262,9 +262,6 @@ class CoderDbcGui(ttk.Window):
         self._selected: Set[str] = set()
         # Maps tree-item IID → ("group", group_name) | ("msg", cantools Message)
         self._tree_items: Dict[str, Tuple[str, object]] = {}
-        # Set in _on_tree_expand_collapse; read and cleared in _on_tree_click
-        # to suppress checkbox toggling when the native indicator was clicked.
-        self._suppress_next_click: bool = False
 
         # ── Build UI ────────────────────────────────────────────────────────
         self._build_ui()
@@ -356,11 +353,10 @@ class CoderDbcGui(ttk.Window):
         self._tree = ttk.Treeview(
             tree_container,
             columns=cols,
-            show="tree headings",
+            show="headings",
             selectmode="browse",
             bootstyle="primary",
         )
-        self._tree.heading("#0", text="")
         self._tree.heading(
             "sel", text=CHECKBOX_OFF,
             command=self._toggle_all_heading,
@@ -370,9 +366,8 @@ class CoderDbcGui(ttk.Window):
         self._tree.heading("signals", text="Signals")
         self._tree.heading("transmitter", text="Transmitter")
 
-        self._tree.column("#0", width=20, minwidth=20, stretch=False)
         self._tree.column("sel", width=30, minwidth=30, anchor=CENTER, stretch=False)
-        self._tree.column("name", width=290, minwidth=180)
+        self._tree.column("name", width=310, minwidth=180)
         self._tree.column("dlc", width=50, anchor=CENTER, minwidth=40)
         self._tree.column("signals", width=60, anchor=CENTER, minwidth=40)
         self._tree.column("transmitter", width=110, anchor=CENTER, minwidth=70)
@@ -388,12 +383,6 @@ class CoderDbcGui(ttk.Window):
         tree_container.columnconfigure(0, weight=1)
 
         self._tree.bind("<ButtonRelease-1>", self._on_tree_click)
-        # <<TreeviewOpen>> / <<TreeviewClose>> fire (between Button-1 and
-        # ButtonRelease-1) only when the native expand/collapse indicator is
-        # clicked.  We use them to suppress the checkbox toggle that would
-        # otherwise fire in _on_tree_click.
-        self._tree.bind("<<TreeviewOpen>>",  self._on_tree_expand_collapse)
-        self._tree.bind("<<TreeviewClose>>", self._on_tree_expand_collapse)
 
     # ── Right panel — Settings + Log ─────────────────────────────────────────
 
@@ -600,8 +589,7 @@ class CoderDbcGui(ttk.Window):
                 g_iid = f"group::{group_name}"
                 self._tree.insert(
                     "", END, iid=g_iid,
-                    text="",
-                    values=(chk, f"0x{min_id:03X}+  {group_name}  ({len(visible)} frames → 1 function set)", "", total_sigs, ""),
+                    values=(chk, f"▶  0x{min_id:03X}+  {group_name}  ({len(visible)} frames → 1 function set)", "", total_sigs, ""),
                     open=False,
                     tags=("group",),
                 )
@@ -622,8 +610,8 @@ class CoderDbcGui(ttk.Window):
         sender = msg.senders[0] if msg.senders else ""
         self._tree.insert(
             parent_iid, END, iid=m_iid,
-            text="",
             values=(chk, f"0x{msg.frame_id:03X}  {msg.name}", msg.length, len(msg.signals), sender),
+            open=True,
             tags=("msg",),
         )
         self._tree_items[m_iid] = ("msg", msg)
@@ -634,52 +622,52 @@ class CoderDbcGui(ttk.Window):
             vt = "S" if sig.is_signed else "U"
             self._tree.insert(
                 m_iid, END, iid=s_iid,
-                text="",
                 values=("", f"    {sig.name}  [{sig.start}|{sig.length}]", bo, vt, ""),
                 tags=("signal",),
             )
 
     # ── Tree interaction ──────────────────────────────────────────────────────
 
-    def _on_tree_expand_collapse(self, event: "tk.Event[ttk.Treeview]") -> None:
-        """Suppress the checkbox toggle for the ButtonRelease-1 that follows
-        a native expand/collapse indicator click.
-
-        Tkinter fires <<TreeviewOpen>> / <<TreeviewClose>> (generated inside
-        the widget's class binding for Button-1) *before* ButtonRelease-1
-        reaches our handler.  Setting this flag here is therefore enough to
-        reliably block the unwanted toggle, regardless of theme or platform.
-        """
-        self._suppress_next_click = True
-
     def _on_tree_click(self, event: "tk.Event[ttk.Treeview]") -> None:
-        """Toggle message/group selection when the user clicks the name column."""
-        region = self._tree.identify_region(event.x, event.y)
-        if region not in ("tree", "cell"):
+        """Handle clicks in the sel (checkbox) and name columns."""
+        if self._tree.identify_region(event.x, event.y) != "cell":
             return
 
         iid = self._tree.identify_row(event.y)
         if not iid or iid not in self._tree_items:
             return
 
-        # React to clicks in the sel column (#1) or the name column (#2).
-        if self._tree.identify_column(event.x) not in ("#1", "#2"):
-            return
-
-        # Ignore clicks caused by the native expand/collapse indicator (▶ / ▼).
-        # _on_tree_expand_collapse sets this flag via <<TreeviewOpen/Close>>,
-        # which always fires before ButtonRelease-1 reaches us.
-        if self._suppress_next_click:
-            self._suppress_next_click = False
+        col = self._tree.identify_column(event.x)
+        if col not in ("#1", "#2"):
             return
 
         kind, data = self._tree_items[iid]
         if kind == "group":
+            if col == "#2":
+                # Name column click → expand/collapse the group
+                self._toggle_group_expand(str(data))
+                return
+            # Sel column click → toggle selection of all messages in group
             self._toggle_group(str(data))
         elif kind == "msg":
             self._toggle_message(data)  # type: ignore[arg-type]
 
         self._update_summary()
+
+    def _toggle_group_expand(self, group_name: str) -> None:
+        """Flip the open/close state of a group row and update its ▶/▼ indicator."""
+        g_iid = f"group::{group_name}"
+        if not self._tree.exists(g_iid):
+            return
+        msgs = self._groups[group_name]
+        min_id = min(m.frame_id for m in msgs)
+        is_open = bool(self._tree.item(g_iid, "open"))
+        self._tree.item(g_iid, open=not is_open)
+        indicator = "▼" if not is_open else "▶"
+        self._tree.set(
+            g_iid, "name",
+            f"{indicator}  0x{min_id:03X}+  {group_name}  ({len(msgs)} frames → 1 function set)",
+        )
 
     def _toggle_message(self, msg: "cantools.database.can.Message") -> None:
         if msg.name in self._selected:
