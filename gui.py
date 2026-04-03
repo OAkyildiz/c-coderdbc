@@ -221,8 +221,9 @@ class CoderDbcGui(ttk.Window):
         self._selected: Set[str] = set()
         # Maps tree-item IID → ("group", group_name) | ("msg", cantools Message)
         self._tree_items: Dict[str, Tuple[str, object]] = {}
-        # Set in _on_tree_press; read in _on_tree_click to detect indicator hits
-        self._pressed_on_indicator: bool = False
+        # Set in _on_tree_expand_collapse; read and cleared in _on_tree_click
+        # to suppress checkbox toggling when the native indicator was clicked.
+        self._suppress_next_click: bool = False
 
         # ── Build UI ────────────────────────────────────────────────────────
         self._build_ui()
@@ -340,8 +341,13 @@ class CoderDbcGui(ttk.Window):
         tree_container.rowconfigure(0, weight=1)
         tree_container.columnconfigure(0, weight=1)
 
-        self._tree.bind("<Button-1>", self._on_tree_press)
         self._tree.bind("<ButtonRelease-1>", self._on_tree_click)
+        # <<TreeviewOpen>> / <<TreeviewClose>> fire (between Button-1 and
+        # ButtonRelease-1) only when the native expand/collapse indicator is
+        # clicked.  We use them to suppress the checkbox toggle that would
+        # otherwise fire in _on_tree_click.
+        self._tree.bind("<<TreeviewOpen>>",  self._on_tree_expand_collapse)
+        self._tree.bind("<<TreeviewClose>>", self._on_tree_expand_collapse)
 
     # ── Right panel — Settings + Log ─────────────────────────────────────────
 
@@ -473,8 +479,11 @@ class CoderDbcGui(ttk.Window):
     # ── DBC loading ──────────────────────────────────────────────────────────
 
     def _browse_dbc(self) -> None:
+        docs = Path.home() / "Documents"
+        initial = str(docs) if docs.is_dir() else str(Path.home())
         path = filedialog.askopenfilename(
             title="Select DBC file",
+            initialdir=initial,
             filetypes=[("DBC files", "*.dbc"), ("All files", "*.*")],
         )
         if path:
@@ -578,16 +587,16 @@ class CoderDbcGui(ttk.Window):
 
     # ── Tree interaction ──────────────────────────────────────────────────────
 
-    def _on_tree_press(self, event: "tk.Event[ttk.Treeview]") -> None:
-        """Record at press-time whether the click landed on the expand/collapse indicator.
+    def _on_tree_expand_collapse(self, event: "tk.Event[ttk.Treeview]") -> None:
+        """Suppress the checkbox toggle for the ButtonRelease-1 that follows
+        a native expand/collapse indicator click.
 
-        The Treeview re-renders between Button-1 and ButtonRelease-1, so
-        identify_element() in the release handler can no longer detect the
-        indicator reliably.  We capture it here instead and store the result.
+        Tkinter fires <<TreeviewOpen>> / <<TreeviewClose>> (generated inside
+        the widget's class binding for Button-1) *before* ButtonRelease-1
+        reaches our handler.  Setting this flag here is therefore enough to
+        reliably block the unwanted toggle, regardless of theme or platform.
         """
-        self._pressed_on_indicator = (
-            self._tree.identify_element(event.x, event.y) == "Treeview.indicator"
-        )
+        self._suppress_next_click = True
 
     def _on_tree_click(self, event: "tk.Event[ttk.Treeview]") -> None:
         """Toggle message/group selection when the user clicks the name column."""
@@ -603,11 +612,11 @@ class CoderDbcGui(ttk.Window):
         if self._tree.identify_column(event.x) != "#0":
             return
 
-        # Ignore clicks on the expand/collapse indicator (▶ / ▼).
-        # We use the flag set by _on_tree_press because by the time
-        # ButtonRelease-1 fires, the tree has re-rendered and
-        # identify_element() no longer sees "Treeview.indicator".
-        if getattr(self, "_pressed_on_indicator", False):
+        # Ignore clicks caused by the native expand/collapse indicator (▶ / ▼).
+        # _on_tree_expand_collapse sets this flag via <<TreeviewOpen/Close>>,
+        # which always fires before ButtonRelease-1 reaches us.
+        if self._suppress_next_click:
+            self._suppress_next_click = False
             return
 
         kind, data = self._tree_items[iid]
