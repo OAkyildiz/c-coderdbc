@@ -361,7 +361,7 @@ class CoderDbcGui(ttk.Window):
             bootstyle="primary",
         )
         self._tree.heading(
-            "#0", text=f"{CHECKBOX_OFF}  ID (hex)   Name",
+            "#0", text=f"{CHECKBOX_OFF}  Name",
             command=self._toggle_all_heading,
         )
         self._tree.heading("dlc", text="DLC")
@@ -781,7 +781,7 @@ class CoderDbcGui(ttk.Window):
             chk = CHECKBOX_PARTIAL
         else:
             chk = CHECKBOX_OFF
-        self._tree.heading("#0", text=f"{chk}  ID (hex)   Name")
+        self._tree.heading("#0", text=f"{chk}  Name")
 
     def _apply_filter(self) -> None:
         self._populate_tree()
