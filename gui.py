@@ -732,13 +732,11 @@ class CoderDbcGui(ttk.Window):
                     else CHECKBOX_PARTIAL if any_sel
                     else CHECKBOX_OFF
                 )
-                min_id = min(m.frame_id for m in visible)
                 total_sigs = sum(len(m.signals) for m in visible)
                 g_iid = f"group::{group_name}"
-                display_name = self._group_aliases.get(group_name, group_name)
                 self._tree.insert(
                     "", END, iid=g_iid,
-                    values=(chk, f"▶  0x{min_id:03X}+  {display_name}  ({len(visible)} frames → 1 function set)", "", total_sigs, "✎ dbl-click to rename"),
+                    values=(chk, self._group_name_cell_text(group_name, "▶", visible), "", total_sigs, "✎ dbl-click to rename"),
                     open=False,
                     tags=("group",),
                 )
@@ -882,13 +880,9 @@ class CoderDbcGui(ttk.Window):
         g_iid = f"group::{group_key}"
         if self._tree.exists(g_iid):
             msgs = self._groups[group_key]
-            min_id = min(m.frame_id for m in msgs)
             is_open = bool(self._tree.item(g_iid, "open"))
             indicator = "▼" if is_open else "▶"
-            self._tree.set(
-                g_iid, "name",
-                f"{indicator}  0x{min_id:03X}+  {new_name}  ({len(msgs)} frames → 1 function set)",
-            )
+            self._tree.set(g_iid, "name", self._group_name_cell_text(group_key, indicator, msgs))
 
     def _cancel_group_rename(self) -> None:
         """Discard the inline rename and remove the Entry widget."""
@@ -900,21 +894,21 @@ class CoderDbcGui(ttk.Window):
             self._rename_entry = None
             self._rename_group_key = None
 
+    def _group_name_cell_text(self, group_key: str, indicator: str, msgs: list) -> str:
+        """Return the formatted text for a group row's name cell."""
+        display_name = self._group_aliases.get(group_key, group_key)
+        return f"{indicator}  0x{min(m.frame_id for m in msgs):03X}+  {display_name}  ({len(msgs)} frames → 1 function set)"
 
+    def _toggle_group_expand(self, group_name: str) -> None:
         """Flip the open/close state of a group row and update its ▶/▼ indicator."""
         g_iid = f"group::{group_name}"
         if not self._tree.exists(g_iid):
             return
         msgs = self._groups[group_name]
-        min_id = min(m.frame_id for m in msgs)
         is_open = bool(self._tree.item(g_iid, "open"))
         self._tree.item(g_iid, open=not is_open)
         indicator = "▼" if not is_open else "▶"
-        display_name = self._group_aliases.get(group_name, group_name)
-        self._tree.set(
-            g_iid, "name",
-            f"{indicator}  0x{min_id:03X}+  {display_name}  ({len(msgs)} frames → 1 function set)",
-        )
+        self._tree.set(g_iid, "name", self._group_name_cell_text(group_name, indicator, msgs))
 
     def _toggle_msg_expand(self, msg: "cantools.database.can.Message") -> None:
         """Flip the open/close state of a message row and update its ▶/▼ indicator."""
