@@ -639,8 +639,8 @@ class CoderDbcGui(ttk.Window):
 
         left = ttk.Frame(paned, padding=4)
         right = ttk.Frame(paned, padding=4)
-        paned.add(left, weight=3)
-        paned.add(right, weight=2)
+        paned.add(left, weight=13)
+        paned.add(right, weight=7)
 
         self._build_tree_panel(left)
         self._build_right_panel(right)
