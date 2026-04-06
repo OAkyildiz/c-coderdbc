@@ -540,8 +540,8 @@ class CoderDbcGui(ttk.Window):
         super().__init__(
             title=self.APP_TITLE,
             themename="darkly",
-            size=(1200, 1020),
-            minsize=(860, 800),
+            size=(1400, 1020),
+            minsize=(1060, 800),
         )
 
         # ── Application variables ───────────────────────────────────────────
