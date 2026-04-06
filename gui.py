@@ -30,6 +30,7 @@ Usage
     python3 gui.py
 """
 
+import json
 import re
 import sys
 import threading
@@ -74,6 +75,8 @@ CHECKBOX_PARTIAL = "⊟"
 
 GROUP_MIN_SIZE = 2       # Minimum messages required to form an auto-group
 APP_VERSION = "1.0"
+
+CONFIG_PATH = Path.home() / ".c_coderdbc_gui.json"
 
 
 # ── Generation helpers ─────────────────────────────────────────────────────────
@@ -320,6 +323,54 @@ def _inject_group_frame_ids(
     return header
 
 
+def _inject_group_range_macros(
+    header: str,
+    groups: Dict[str, List],
+    selected_names: Set[str],
+) -> str:
+    """Inject ``xxx_FRAME_ID_FIRST``, ``xxx_FRAME_ID_LAST``, and
+    ``xxx_FRAME_ID_COUNT`` macros into the header for every genuine group.
+
+    The macros are appended to the *Frame ids.* section so they sit right
+    alongside the individual per-message ``_FRAME_ID`` macros.  Messages
+    within a group are ordered by ascending frame ID.
+
+    Example output for group key ``ARS_Obj`` (6 messages, IDs 0x400–0x405)::
+
+        #define ARS_OBJ_FRAME_ID_FIRST (0x400u)
+        #define ARS_OBJ_FRAME_ID_LAST  (0x405u)
+        #define ARS_OBJ_FRAME_ID_COUNT (6u)
+    """
+    range_lines: List[str] = []
+
+    for group_key, msgs in groups.items():
+        if len(msgs) < 2:
+            continue
+        sel_msgs = [m for m in msgs if m.name in selected_names]
+        if not sel_msgs:
+            continue
+        ids = sorted(m.frame_id for m in sel_msgs)
+        group_upper = _ct_snake(group_key).upper()
+        range_lines.extend([
+            f"#define {group_upper}_FRAME_ID_FIRST (0x{ids[0]:x}u)",
+            f"#define {group_upper}_FRAME_ID_LAST  (0x{ids[-1]:x}u)",
+            f"#define {group_upper}_FRAME_ID_COUNT ({len(ids)}u)",
+        ])
+
+    if not range_lines:
+        return header
+
+    def _append_to_section(text: str, comment: str, new_lines: List[str]) -> str:
+        if not new_lines:
+            return text
+        pattern = rf'(/\* {re.escape(comment)} \*/\n(?:[^\n]+\n)*)\n'
+        def _repl(m: "re.Match") -> str:
+            return m.group(1) + "\n".join(new_lines) + "\n\n"
+        return re.sub(pattern, _repl, text, count=1)
+
+    return _append_to_section(header, "Frame ids.", range_lines)
+
+
 def _replace_bitshift_funcs(source: str, bitshift_header: str) -> str:
     """Replace the inline bitshift helper block with a user-supplied ``#include``.
 
@@ -557,6 +608,10 @@ class CoderDbcGui(ttk.Window):
 
         # ── Build UI ────────────────────────────────────────────────────────
         self._build_ui()
+
+        # ── Restore saved settings, then bind close handler ─────────────────
+        self._load_config()
+        self.protocol("WM_DELETE_WINDOW", self._on_close)
 
     # ── UI Construction ──────────────────────────────────────────────────────
 
@@ -1353,6 +1408,10 @@ class CoderDbcGui(ttk.Window):
                     header, groups, selected_names, ""
                 )
 
+            # Post-process: inject FRAME_ID_FIRST / FRAME_ID_LAST / FRAME_ID_COUNT
+            # range macros for every group (always emitted when groups are present).
+            header = _inject_group_range_macros(header, groups, selected_names)
+
             # Post-process: strip disabled header sections
             if self._opt_skip_length.get():
                 header = _strip_section(header, "Frame lengths in bytes.")
@@ -1407,6 +1466,91 @@ class CoderDbcGui(ttk.Window):
         path = filedialog.askdirectory(title="Select output directory")
         if path:
             self._out_path.set(path)
+
+    # ── Settings persistence ──────────────────────────────────────────────────
+
+    def _config_data(self) -> dict:
+        """Collect all saveable UI state into a plain dict."""
+        return {
+            "out_path":           self._out_path.get(),
+            "drv_name":           self._drv_name.get(),
+            "sym_prefix":         self._sym_prefix.get(),
+            "node_name":          self._node_name.get(),
+            "bitshift_header":    self._bitshift_header.get(),
+            # cantools options
+            "opt_fp":             self._opt_fp.get(),
+            "opt_bitfields":      self._opt_bitfields.get(),
+            "opt_use_float":      self._opt_use_float.get(),
+            "opt_use_round":      self._opt_use_round.get(),
+            # output filter options
+            "opt_skip_length":      self._opt_skip_length.get(),
+            "opt_skip_extended":    self._opt_skip_extended.get(),
+            "opt_skip_cycle_time":  self._opt_skip_cycle_time.get(),
+            "opt_skip_frame_names": self._opt_skip_frame_names.get(),
+            "opt_skip_sig_names":   self._opt_skip_sig_names.get(),
+            "opt_skip_validate":    self._opt_skip_validate.get(),
+            "opt_skip_choices":     self._opt_skip_choices.get(),
+            # group / bitshift options
+            "opt_expand_group_ids": self._opt_expand_group_ids.get(),
+            "opt_strip_sig_suffix": self._opt_strip_sig_suffix.get(),
+            # last-used DBC file (so it can be offered as a default next time)
+            "dbc_path":           self._dbc_path.get(),
+        }
+
+    def _save_config(self) -> None:
+        """Write current UI state to the JSON config file."""
+        try:
+            CONFIG_PATH.write_text(
+                json.dumps(self._config_data(), indent=2), encoding="utf-8"
+            )
+        except Exception:
+            pass  # Never crash on save failure
+
+    def _load_config(self) -> None:
+        """Restore UI state from the JSON config file (if it exists)."""
+        if not CONFIG_PATH.exists():
+            return
+        try:
+            data: dict = json.loads(CONFIG_PATH.read_text(encoding="utf-8"))
+        except Exception:
+            return  # Corrupt / incompatible file — silently ignore
+
+        str_vars = {
+            "out_path":        self._out_path,
+            "drv_name":        self._drv_name,
+            "sym_prefix":      self._sym_prefix,
+            "node_name":       self._node_name,
+            "bitshift_header": self._bitshift_header,
+            "dbc_path":        self._dbc_path,
+        }
+        bool_vars = {
+            "opt_fp":               self._opt_fp,
+            "opt_bitfields":        self._opt_bitfields,
+            "opt_use_float":        self._opt_use_float,
+            "opt_use_round":        self._opt_use_round,
+            "opt_skip_length":      self._opt_skip_length,
+            "opt_skip_extended":    self._opt_skip_extended,
+            "opt_skip_cycle_time":  self._opt_skip_cycle_time,
+            "opt_skip_frame_names": self._opt_skip_frame_names,
+            "opt_skip_sig_names":   self._opt_skip_sig_names,
+            "opt_skip_validate":    self._opt_skip_validate,
+            "opt_skip_choices":     self._opt_skip_choices,
+            "opt_expand_group_ids": self._opt_expand_group_ids,
+            "opt_strip_sig_suffix": self._opt_strip_sig_suffix,
+        }
+
+        for key, var in str_vars.items():
+            if key in data and isinstance(data[key], str):
+                var.set(data[key])
+
+        for key, var in bool_vars.items():
+            if key in data and isinstance(data[key], bool):
+                var.set(data[key])
+
+    def _on_close(self) -> None:
+        """Save settings and close the window."""
+        self._save_config()
+        self.destroy()
 
     # ── Logging ───────────────────────────────────────────────────────────────
 
