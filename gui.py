@@ -207,6 +207,50 @@ def _strip_redundant_signal_suffixes(
     return header, source
 
 
+def _strip_grouped_message_name_prefix(
+    header: str,
+    source: str,
+    groups: Dict[str, List],
+    selected_names: Set[str],
+) -> Tuple[str, str]:
+    """Strip the snake_case message-name segment from grouped-message identifiers.
+
+    After the identifier-prefix replacement step identifiers for a grouped
+    representative message ``ARS_Obj_00`` look like::
+
+        <pfx>_ars_obj_00_dist_x_encode       (function / struct-tag)
+        <PFX>_ARS_OBJ_00_DIST_X_NAME         (#define macro)
+
+    Since the grouping already captures the per-instance variation, the
+    ``ars_obj_00`` / ``ARS_OBJ_00`` segment is redundant.  This pass removes
+    it so the result uses only the sym_prefix::
+
+        <pfx>_dist_x_encode
+        <PFX>_DIST_X_NAME
+
+    Only applied to genuine groups (2+ messages).  Mixed-case string literals
+    (``"ARS_Obj_00"``) and doxygen comments are left untouched because they
+    use the original capitalisation which neither pattern matches.
+    """
+    for msgs in groups.values():
+        if len(msgs) < 2:
+            continue
+        rep = next((m for m in msgs if m.name in selected_names), None)
+        if rep is None:
+            continue
+
+        msg_lower = _ct_snake(rep.name)   # e.g. "ars_obj_00"
+        msg_upper = msg_lower.upper()     # e.g. "ARS_OBJ_00"
+
+        # Strip "ars_obj_00_" and "ARS_OBJ_00_" from all identifiers.
+        # String literals always use the original mixed case ("ARS_Obj_00")
+        # so simple str.replace is both sufficient and safe here.
+        header = header.replace(msg_lower + "_", "").replace(msg_upper + "_", "")
+        source = source.replace(msg_lower + "_", "").replace(msg_upper + "_", "")
+
+    return header, source
+
+
 def _inject_group_frame_ids(
     header: str,
     groups: Dict[str, List],
@@ -660,7 +704,7 @@ class CoderDbcGui(ttk.Window):
             (self._opt_skip_validate,    "Skip validate functions (is_in_range)"),
             (self._opt_skip_choices,     "Skip signal choices macros (_CHOICE)"),
             (self._opt_expand_group_ids, "Expand groups: emit frame ID macros for all grouped messages"),
-            (self._opt_strip_sig_suffix, "Strip redundant signal suffix for groups (e.g. _Obj_00 → clean names)"),
+            (self._opt_strip_sig_suffix, "Strip redundant identifiers for groups: use sym_prefix only (e.g. ars_dist_x_encode)"),
         ]
         for var, label in filter_opts:
             ttk.Checkbutton(
@@ -1227,11 +1271,16 @@ class CoderDbcGui(ttk.Window):
                     header, source, drv_name, sym_prefix
                 )
 
-            # Post-process: strip common signal suffix for grouped messages
-            # (e.g. every signal in ARS_Obj_00 ends with _Obj_00 → strip it so
-            # ars_obj_00_dist_x_obj_00_encode becomes ars_obj_00_dist_x_encode).
+            # Post-process: strip common signal suffix and message-name segment
+            # for grouped messages.  Two passes:
+            #  1. signal suffix  – e.g. _obj_00 on struct members / signal macros
+            #  2. message prefix – e.g. ars_obj_00_ between sym_prefix and signal
+            # Result: <pfx>_dist_x_encode instead of <pfx>_ars_obj_00_dist_x_obj_00_encode
             if self._opt_strip_sig_suffix.get():
                 header, source = _strip_redundant_signal_suffixes(
+                    header, source, groups, selected_names
+                )
+                header, source = _strip_grouped_message_name_prefix(
                     header, source, groups, selected_names
                 )
 
