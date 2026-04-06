@@ -51,7 +51,10 @@ except ImportError:
 try:
     import cantools
     import cantools.database
-    from cantools.database.can.c_source import generate as _ct_generate
+    from cantools.database.can.c_source import (
+        generate as _ct_generate,
+        camel_to_snake_case as _ct_snake,
+    )
 except ImportError:
     print(
         "ERROR: cantools is required.\n"
@@ -126,6 +129,82 @@ def _strip_validate_funcs(text: str) -> str:
         text,
     )
     return text
+
+
+def _common_suffix_ci(names: List[str]) -> str:
+    """Return the longest common suffix shared by all *names* (case-insensitive)."""
+    if not names:
+        return ""
+    lower = [n.lower() for n in names]
+    ref = lower[0]
+    for length in range(len(ref), 0, -1):
+        candidate = ref[-length:]
+        if all(n.endswith(candidate) for n in lower):
+            return candidate
+    return ""
+
+
+def _strip_redundant_signal_suffixes(
+    header: str,
+    source: str,
+    groups: Dict[str, List],
+    selected_names: Set[str],
+) -> Tuple[str, str]:
+    """Remove redundant common suffix from signal identifiers in grouped-message output.
+
+    When every signal in a representative grouped message shares the same
+    trailing suffix (e.g. ``_Obj_00`` in a group of ``ARS_Obj_00`` …
+    ``ARS_Obj_63``), cantools emits function names like
+    ``ars_obj_00_dist_x_obj_00_encode``.  This post-pass strips the repeated
+    suffix so the result is ``ars_obj_00_dist_x_encode``.
+
+    The replacement targets only all-lowercase (function/variable/struct-member
+    names) and all-uppercase (#define macro names) identifier tokens; mixed-case
+    string literals and doxygen comments are left untouched.
+    """
+    for msgs in groups.values():
+        if len(msgs) < 2:
+            continue
+        rep = next((m for m in msgs if m.name in selected_names), None)
+        if rep is None or not rep.signals:
+            continue
+
+        # Build the C-identifier form of each signal name using the same
+        # conversion cantools uses: camel_to_snake_case for lowercase identifiers
+        # (function names, struct members) and camel_to_snake_case + upper for
+        # #define macro names.
+        sig_ids_lower = [_ct_snake(s.name) for s in rep.signals]
+        sig_ids_upper = [_ct_snake(s.name).upper() for s in rep.signals]
+
+        suffix_lower = _common_suffix_ci(sig_ids_lower)
+        if not suffix_lower or not suffix_lower.startswith("_") or len(suffix_lower) < 2:
+            continue
+        suffix_upper = _common_suffix_ci(sig_ids_upper)
+        if not suffix_upper or not suffix_upper.startswith("_"):
+            continue
+
+        # Verify stripping would not create duplicate or empty identifiers.
+        strip_lo = len(suffix_lower)
+        strip_up = len(suffix_upper)
+        new_lower = [n[:-strip_lo] for n in sig_ids_lower]
+        new_upper = [n[:-strip_up] for n in sig_ids_upper]
+        if (not all(new_lower)
+                or len(set(new_lower)) != len(new_lower)
+                or not all(new_upper)):
+            continue
+
+        # Sort longest-first so a longer name is replaced before any shorter
+        # name that shares a suffix with it, avoiding partial-match surprises.
+        quads = sorted(
+            zip(sig_ids_lower, new_lower, sig_ids_upper, new_upper),
+            key=lambda t: len(t[0]),
+            reverse=True,
+        )
+        for old_lo, new_lo, old_up, new_up in quads:
+            header = header.replace(old_lo, new_lo).replace(old_up, new_up)
+            source = source.replace(old_lo, new_lo).replace(old_up, new_up)
+
+    return header, source
 
 
 def _inject_group_frame_ids(
@@ -337,8 +416,9 @@ class CoderDbcGui(ttk.Window):
         self._opt_skip_choices     = tk.BooleanVar(value=False)
 
         # ── Group / bitshift options ─────────────────────────────────────────
-        self._opt_expand_group_ids = tk.BooleanVar(value=False)
-        self._bitshift_header      = tk.StringVar(value="")
+        self._opt_expand_group_ids   = tk.BooleanVar(value=False)
+        self._opt_strip_sig_suffix   = tk.BooleanVar(value=True)
+        self._bitshift_header        = tk.StringVar(value="")
 
         # Ordered list used by the master toggle to iterate all filter vars.
         self._filter_vars: List[tk.BooleanVar] = [
@@ -350,6 +430,7 @@ class CoderDbcGui(ttk.Window):
             self._opt_skip_validate,
             self._opt_skip_choices,
             self._opt_expand_group_ids,
+            self._opt_strip_sig_suffix,
         ]
         # Master toggle var: True = all on, False = all off (no tri-state var needed).
         self._opt_filter_master = tk.BooleanVar(value=False)
@@ -579,6 +660,7 @@ class CoderDbcGui(ttk.Window):
             (self._opt_skip_validate,    "Skip validate functions (is_in_range)"),
             (self._opt_skip_choices,     "Skip signal choices macros (_CHOICE)"),
             (self._opt_expand_group_ids, "Expand groups: emit frame ID macros for all grouped messages"),
+            (self._opt_strip_sig_suffix, "Strip redundant signal suffix for groups (e.g. _Obj_00 → clean names)"),
         ]
         for var, label in filter_opts:
             ttk.Checkbutton(
@@ -1143,6 +1225,14 @@ class CoderDbcGui(ttk.Window):
             if sym_prefix != drv_name:
                 header, source = _replace_identifier_prefix(
                     header, source, drv_name, sym_prefix
+                )
+
+            # Post-process: strip common signal suffix for grouped messages
+            # (e.g. every signal in ARS_Obj_00 ends with _Obj_00 → strip it so
+            # ars_obj_00_dist_x_obj_00_encode becomes ars_obj_00_dist_x_encode).
+            if self._opt_strip_sig_suffix.get():
+                header, source = _strip_redundant_signal_suffixes(
+                    header, source, groups, selected_names
                 )
 
             # Post-process: inject frame-ID macros for all selected grouped messages
