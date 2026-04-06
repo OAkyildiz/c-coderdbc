@@ -128,6 +128,87 @@ def _strip_validate_funcs(text: str) -> str:
     return text
 
 
+def _inject_group_frame_ids(
+    header: str,
+    groups: Dict[str, List],
+    selected_names: Set[str],
+    sym_prefix: str,
+) -> str:
+    """Inject per-message frame-ID macros for every selected message in a group.
+
+    When code is generated for a group, cantools only emits macros for the
+    representative (first selected) member.  This function appends the missing
+    macros for the remaining selected members so every message ID and its
+    companion constants are present in the header.
+    """
+    effective_prefix = (sym_prefix.upper() + "_") if sym_prefix else ""
+
+    # Collect non-representative selected messages across all multi-message groups.
+    extra_msgs = []
+    for msgs in groups.values():
+        if len(msgs) < 2:
+            continue
+        sel_msgs = [m for m in msgs if m.name in selected_names]
+        if len(sel_msgs) < 2:
+            continue
+        extra_msgs.extend(sel_msgs[1:])  # first entry is the representative
+
+    if not extra_msgs:
+        return header
+
+    pfx = effective_prefix
+
+    def _append_to_section(text: str, comment: str, new_lines: List[str]) -> str:
+        """Insert *new_lines* at the end of a ``/* comment */`` section."""
+        if not new_lines:
+            return text
+        pattern = rf'(/\* {re.escape(comment)} \*/\n(?:[^\n]+\n)*)\n'
+        def _repl(m: "re.Match") -> str:
+            return m.group(1) + "\n".join(new_lines) + "\n\n"
+        return re.sub(pattern, _repl, text, count=1)
+
+    header = _append_to_section(
+        header, "Frame ids.",
+        [f"#define {pfx}{m.name.upper()}_FRAME_ID (0x{m.frame_id:x}u)" for m in extra_msgs],
+    )
+    header = _append_to_section(
+        header, "Frame lengths in bytes.",
+        [f"#define {pfx}{m.name.upper()}_LENGTH ({m.length}u)" for m in extra_msgs],
+    )
+    header = _append_to_section(
+        header, "Extended or standard frame types.",
+        [f"#define {pfx}{m.name.upper()}_IS_EXTENDED ({1 if m.is_extended_frame else 0})"
+         for m in extra_msgs],
+    )
+    cyc_lines = [
+        f"#define {pfx}{m.name.upper()}_CYCLE_TIME_MS ({int(m.cycle_time)}u)"
+        for m in extra_msgs
+        if getattr(m, "cycle_time", None) is not None
+    ]
+    header = _append_to_section(header, "Frame cycle times in milliseconds.", cyc_lines)
+    header = _append_to_section(
+        header, "Frame Names.",
+        [f'#define {pfx}{m.name.upper()}_NAME "{m.name}"' for m in extra_msgs],
+    )
+    return header
+
+
+def _replace_bitshift_funcs(source: str, bitshift_header: str) -> str:
+    """Replace the inline bitshift helper block with a user-supplied ``#include``.
+
+    The generated ``.c`` file contains a block of ``static inline`` helper
+    functions (``pack_left_shift_*``, ``pack_right_shift_*``,
+    ``unpack_left_shift_*``, ``unpack_right_shift_*``) immediately after the
+    ``#include "drvname.h"`` line.  When *bitshift_header* is non-empty, that
+    entire block is removed and ``#include "<bitshift_header>"`` is inserted in
+    its place.  Passing an empty string leaves the inline functions unchanged.
+    """
+    # Each helper matches: "static inline <type> <name>(<args>)\n{\n    return ...;\n}\n\n"
+    # [^)]+ covers the (possibly multi-line) argument list; [^}]+ covers the body.
+    pattern = r"(?:static inline \S+ \S+\([^)]+\)\n\{[^}]+\}\n\n)+"
+    return re.sub(pattern, f'#include "{bitshift_header}"\n\n', source, count=1)
+
+
 def _replace_identifier_prefix(
     header: str, source: str, drv_name: str, new_prefix: str
 ) -> Tuple[str, str]:
@@ -253,6 +334,11 @@ class CoderDbcGui(ttk.Window):
         self._opt_skip_frame_names = tk.BooleanVar(value=False)
         self._opt_skip_sig_names   = tk.BooleanVar(value=False)
         self._opt_skip_validate    = tk.BooleanVar(value=False)
+        self._opt_skip_choices     = tk.BooleanVar(value=False)
+
+        # ── Group / bitshift options ─────────────────────────────────────────
+        self._opt_expand_group_ids = tk.BooleanVar(value=False)
+        self._bitshift_header      = tk.StringVar(value="")
 
         # ── Internal state ──────────────────────────────────────────────────
         self._db: Optional[cantools.database.Database] = None
@@ -461,11 +547,26 @@ class CoderDbcGui(ttk.Window):
             (self._opt_skip_frame_names, "Skip frame-name macros"),
             (self._opt_skip_sig_names,   "Skip signal-name macros"),
             (self._opt_skip_validate,    "Skip validate functions (is_in_range)"),
+            (self._opt_skip_choices,     "Skip signal choices macros (_CHOICE)"),
+            (self._opt_expand_group_ids, "Expand groups: emit frame ID macros for all grouped messages"),
         ]
         for var, label in filter_opts:
             ttk.Checkbutton(
                 parent, text=label, variable=var, bootstyle="warning-round-toggle"
             ).pack(anchor=W, pady=2)
+
+        ttk.Separator(parent).pack(fill=X, pady=8)
+
+        # ── Bitshift helpers ─────────────────────────────────────────────────
+        ttk.Label(parent, text="Bitshift Helpers", font=("", 10, "bold")).pack(
+            anchor=W, pady=(0, 4)
+        )
+        ttk.Label(
+            parent,
+            text="Bitshift header file  (blank = keep inline functions in .c)",
+            bootstyle="secondary",
+        ).pack(anchor=W)
+        ttk.Entry(parent, textvariable=self._bitshift_header).pack(fill=X, pady=(2, 0))
 
         ttk.Separator(parent).pack(fill=X, pady=8)
 
@@ -859,9 +960,13 @@ class CoderDbcGui(ttk.Window):
         self._gen_btn.configure(state="disabled")
         self._progress.configure(bootstyle="success-striped", mode="indeterminate")
         self._progress.start(10)
+        # Snapshot mutable state so the worker thread sees a consistent view.
+        groups_snapshot = {k: list(v) for k, v in self._groups.items()}
+        selected_snapshot = set(self._selected)
         threading.Thread(
             target=self._run_generation,
-            args=(representatives, out_dir, drv_name, sym_prefix),
+            args=(representatives, out_dir, drv_name, sym_prefix,
+                  groups_snapshot, selected_snapshot),
             daemon=True,
         ).start()
 
@@ -871,6 +976,8 @@ class CoderDbcGui(ttk.Window):
         out_dir: str,
         drv_name: str,
         sym_prefix: str,
+        groups: Dict[str, List["cantools.database.can.Message"]],
+        selected_names: Set[str],
     ) -> None:
         try:
             # Build a filtered in-memory database from the selected messages.
@@ -903,6 +1010,13 @@ class CoderDbcGui(ttk.Window):
                     header, source, drv_name, sym_prefix
                 )
 
+            # Post-process: inject frame-ID macros for all selected grouped messages
+            # before any section-strip passes (strips will then apply uniformly).
+            if self._opt_expand_group_ids.get():
+                header = _inject_group_frame_ids(
+                    header, groups, selected_names, sym_prefix
+                )
+
             # Post-process: strip disabled header sections
             if self._opt_skip_length.get():
                 header = _strip_section(header, "Frame lengths in bytes.")
@@ -914,9 +1028,16 @@ class CoderDbcGui(ttk.Window):
                 header = _strip_section(header, "Frame Names.")
             if self._opt_skip_sig_names.get():
                 header = _strip_section(header, "Signal Names.")
+            if self._opt_skip_choices.get():
+                header = _strip_section(header, "Signal choices.")
             if self._opt_skip_validate.get():
                 header = _strip_validate_funcs(header)
                 source = _strip_validate_funcs(source)
+
+            # Post-process: replace inline bitshift helpers with a user include.
+            bitshift_hdr = self._bitshift_header.get().strip()
+            if bitshift_hdr:
+                source = _replace_bitshift_funcs(source, bitshift_hdr)
 
             # Write output files (any conflict was already confirmed in _generate)
             out = Path(out_dir)
