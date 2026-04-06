@@ -476,6 +476,43 @@ def _rename_grouped_message_prefix(
     return header, source
 
 
+def _apply_frame_id_prefix(
+    header: str,
+    source: str,
+    groups: Dict[str, List],
+    selected_names: Set[str],
+    frame_id_prefix_items: Set[str],
+) -> Tuple[str, str]:
+    """Replace the group/message name prefix with a hex frame-ID prefix.
+
+    For groups/messages whose key is in *frame_id_prefix_items*, replaces the
+    group-key-derived identifier prefix with ``x{frame_id:x}_``.  For example,
+    if group key ``ARS_Obj`` has representative frame ID ``0x400``, every
+    identifier like ``ars_obj_dist_x_encode`` becomes ``x400_dist_x_encode``.
+
+    This is useful when signal names don't share the frame-name prefix and the
+    auto-grouped name would produce misleading identifiers.
+    """
+    for group_key, msgs in groups.items():
+        if group_key not in frame_id_prefix_items:
+            continue
+        rep = next((m for m in msgs if m.name in selected_names), None)
+        if rep is None:
+            continue
+
+        group_lower = _ct_snake(group_key)
+        group_upper = group_lower.upper()
+        fid_lower = f"x{rep.frame_id:x}"
+        fid_upper = fid_lower.upper()
+
+        header = header.replace(group_lower + "_", fid_lower + "_")
+        header = header.replace(group_upper + "_", fid_upper + "_")
+        source = source.replace(group_lower + "_", fid_lower + "_")
+        source = source.replace(group_upper + "_", fid_upper + "_")
+
+    return header, source
+
+
 # ── Auto-grouping ──────────────────────────────────────────────────────────────
 
 def detect_groups(
@@ -573,6 +610,11 @@ class CoderDbcGui(ttk.Window):
         self._opt_expand_group_ids   = tk.BooleanVar(value=False)
         self._opt_strip_sig_suffix   = tk.BooleanVar(value=True)
         self._bitshift_header        = tk.StringVar(value="")
+
+        # Per-group/message frame-ID prefix: set of group keys whose identifiers
+        # should be prefixed with the hex frame-ID (e.g. x400_) instead of the
+        # group name.  Toggled via right-click context menu on tree rows.
+        self._frame_id_prefix_items: Set[str] = set()
 
         # Ordered list used by the master toggle to iterate all filter vars.
         self._filter_vars: List[tk.BooleanVar] = [
@@ -737,6 +779,7 @@ class CoderDbcGui(ttk.Window):
 
         self._tree.bind("<ButtonRelease-1>", self._on_tree_click)
         self._tree.bind("<Double-Button-1>", self._on_tree_double_click)
+        self._tree.bind("<Button-3>", self._on_tree_right_click)
 
     # ── Right panel — Settings + Log ─────────────────────────────────────────
 
@@ -823,7 +866,7 @@ class CoderDbcGui(ttk.Window):
             (self._opt_skip_validate,    "Skip validate functions (is_in_range)"),
             (self._opt_skip_choices,     "Skip signal choices macros (_CHOICE)"),
             (self._opt_expand_group_ids, "Expand groups: emit frame ID macros for all grouped messages"),
-            (self._opt_strip_sig_suffix, "Strip redundant signal suffix for groups (e.g. ars_obj_dist_x_obj_00_encode → ars_obj_dist_x_encode)"),
+            (self._opt_strip_sig_suffix, "Strip redundant signal suffix in groups"),
         ]
         for var, label in filter_opts:
             ttk.Checkbutton(
@@ -940,6 +983,7 @@ class CoderDbcGui(ttk.Window):
         # Start with a flat (one group per message) layout
         self._groups = {msg.name: [msg] for msg in self._messages}
         self._group_aliases.clear()
+        self._frame_id_prefix_items.clear()
         self._populate_tree()
         self._update_summary()
         self._log(f"Loaded {len(self._messages)} message(s).", tag="success")
@@ -1006,9 +1050,11 @@ class CoderDbcGui(ttk.Window):
         sender = msg.senders[0] if msg.senders else ""
         has_sigs = bool(msg.signals)
         prefix = "▶  " if has_sigs else "   "
+        # Show [fid] marker only for top-level (single-message group) rows
+        fid_tag = "  [fid]" if (not parent_iid and msg.name in self._frame_id_prefix_items) else ""
         self._tree.insert(
             parent_iid, END, iid=m_iid,
-            values=(chk, f"{prefix}0x{msg.frame_id:03X}  {msg.name}", msg.length, len(msg.signals), sender),
+            values=(chk, f"{prefix}0x{msg.frame_id:03X}  {msg.name}{fid_tag}", msg.length, len(msg.signals), sender),
             open=False,
             tags=("msg",),
         )
@@ -1070,6 +1116,66 @@ class CoderDbcGui(ttk.Window):
         if kind != "group":
             return
         self._start_group_rename(str(data))
+
+    def _on_tree_right_click(self, event: "tk.Event[ttk.Treeview]") -> None:
+        """Show a context menu to toggle the frame-ID prefix for the clicked row."""
+        iid = self._tree.identify_row(event.y)
+        if not iid or iid not in self._tree_items:
+            return
+        kind, data = self._tree_items[iid]
+        if kind == "signal":
+            return
+
+        # Resolve the group key and the representative frame ID.
+        if kind == "group":
+            group_key = str(data)
+            msgs = self._groups.get(group_key, [])
+            rep = next((m for m in msgs if m.name in self._selected), msgs[0] if msgs else None)
+        else:
+            msg = data  # type: ignore[assignment]
+            # Find the group this message belongs to.
+            group_key = next(
+                (k for k, v in self._groups.items() if any(m.name == msg.name for m in v)),
+                msg.name,  # type: ignore[union-attr]
+            )
+            rep = msg  # type: ignore[assignment]
+
+        if rep is None:
+            return
+
+        enabled = group_key in self._frame_id_prefix_items
+        check = "✓  " if enabled else "      "
+        menu = tk.Menu(self, tearoff=0)
+        menu.add_command(
+            label=f"{check}Use frame-ID prefix  [0x{rep.frame_id:x}]",  # type: ignore[union-attr]
+            command=lambda gk=group_key: self._toggle_frame_id_prefix(gk),
+        )
+        menu.tk_popup(event.x_root, event.y_root)
+
+    def _toggle_frame_id_prefix(self, group_key: str) -> None:
+        """Enable or disable the frame-ID identifier prefix for *group_key*."""
+        if group_key in self._frame_id_prefix_items:
+            self._frame_id_prefix_items.discard(group_key)
+        else:
+            self._frame_id_prefix_items.add(group_key)
+        # Refresh the affected row(s) in the tree.
+        g_iid = f"group::{group_key}"
+        if self._tree.exists(g_iid):
+            msgs = self._groups.get(group_key, [])
+            is_open = bool(self._tree.item(g_iid, "open"))
+            indicator = "▼" if is_open else "▶"
+            self._tree.set(g_iid, "name", self._group_name_cell_text(group_key, indicator, msgs))
+        else:
+            # Single-message top-level row
+            msgs = self._groups.get(group_key, [])
+            if msgs:
+                m = msgs[0]
+                m_iid = f"msg::{m.frame_id}"
+                if self._tree.exists(m_iid):
+                    is_open = bool(self._tree.item(m_iid, "open"))
+                    indicator = "▼  " if is_open else "▶  " if m.signals else "   "
+                    fid_tag = "  [fid]" if group_key in self._frame_id_prefix_items else ""
+                    self._tree.set(m_iid, "name", f"{indicator}0x{m.frame_id:03X}  {m.name}{fid_tag}")
 
     def _start_group_rename(self, group_key: str) -> None:
         """Overlay an Entry widget on the group row's name cell for inline editing."""
@@ -1146,7 +1252,8 @@ class CoderDbcGui(ttk.Window):
     def _group_name_cell_text(self, group_key: str, indicator: str, msgs: list) -> str:
         """Return the formatted text for a group row's name cell."""
         display_name = self._group_aliases.get(group_key, group_key)
-        return f"{indicator}  0x{min(m.frame_id for m in msgs):03X}+  {display_name}  ({len(msgs)} frames → 1 function set)"
+        fid_tag = "  [fid]" if group_key in self._frame_id_prefix_items else ""
+        return f"{indicator}  0x{min(m.frame_id for m in msgs):03X}+  {display_name}  ({len(msgs)} frames → 1 function set){fid_tag}"
 
     def _toggle_group_expand(self, group_name: str) -> None:
         """Flip the open/close state of a group row and update its ▶/▼ indicator."""
@@ -1167,7 +1274,8 @@ class CoderDbcGui(ttk.Window):
         is_open = bool(self._tree.item(m_iid, "open"))
         self._tree.item(m_iid, open=not is_open)
         indicator = "▼  " if not is_open else "▶  "
-        self._tree.set(m_iid, "name", f"{indicator}0x{msg.frame_id:03X}  {msg.name}")
+        fid_tag = "  [fid]" if msg.name in self._frame_id_prefix_items else ""
+        self._tree.set(m_iid, "name", f"{indicator}0x{msg.frame_id:03X}  {msg.name}{fid_tag}")
 
     def _toggle_message(self, msg: "cantools.database.can.Message") -> None:
         if msg.name in self._selected:
@@ -1347,10 +1455,11 @@ class CoderDbcGui(ttk.Window):
         # Snapshot mutable state so the worker thread sees a consistent view.
         groups_snapshot = {k: list(v) for k, v in self._groups.items()}
         selected_snapshot = set(self._selected)
+        frame_id_prefix_snapshot = set(self._frame_id_prefix_items)
         threading.Thread(
             target=self._run_generation,
             args=(representatives, out_dir, drv_name, sym_prefix,
-                  groups_snapshot, selected_snapshot),
+                  groups_snapshot, selected_snapshot, frame_id_prefix_snapshot),
             daemon=True,
         ).start()
 
@@ -1362,6 +1471,7 @@ class CoderDbcGui(ttk.Window):
         sym_prefix: str,
         groups: Dict[str, List["cantools.database.can.Message"]],
         selected_names: Set[str],
+        frame_id_prefix_items: Set[str],
     ) -> None:
         try:
             # Build a filtered in-memory database from the selected messages.
@@ -1401,6 +1511,14 @@ class CoderDbcGui(ttk.Window):
             header, source = _rename_grouped_message_prefix(
                 header, source, groups, selected_names
             )
+
+            # Post-process: replace the group/message name prefix with the hex
+            # frame-ID for entries that have the frame-ID prefix option enabled.
+            # e.g. ars_obj_dist_x_encode → x400_dist_x_encode  (frame ID 0x400)
+            if frame_id_prefix_items:
+                header, source = _apply_frame_id_prefix(
+                    header, source, groups, selected_names, frame_id_prefix_items
+                )
 
             # Post-process: strip redundant signal suffix for grouped messages
             # (e.g. every signal in ARS_Obj_00 ends with _Obj_00 → strip it so
