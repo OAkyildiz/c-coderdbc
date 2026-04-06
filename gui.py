@@ -361,10 +361,15 @@ class CoderDbcGui(ttk.Window):
         self._db: Optional[cantools.database.Database] = None
         self._messages: List[cantools.database.can.Message] = []
         self._groups: Dict[str, List[cantools.database.can.Message]] = {}
+        # Maps internal group key → user-chosen display name (survives repopulates)
+        self._group_aliases: Dict[str, str] = {}
         # Selected message names (cantools message names are unique within a db)
         self._selected: Set[str] = set()
         # Maps tree-item IID → ("group", group_name) | ("msg", cantools Message)
         self._tree_items: Dict[str, Tuple[str, object]] = {}
+        # Active inline-rename Entry widget (None when no rename is in progress)
+        self._rename_entry: Optional[tk.Entry] = None
+        self._rename_group_key: Optional[str] = None
 
         # ── Build UI ────────────────────────────────────────────────────────
         self._build_ui()
@@ -487,6 +492,7 @@ class CoderDbcGui(ttk.Window):
         tree_container.columnconfigure(0, weight=1)
 
         self._tree.bind("<ButtonRelease-1>", self._on_tree_click)
+        self._tree.bind("<Double-Button-1>", self._on_tree_double_click)
 
     # ── Right panel — Settings + Log ─────────────────────────────────────────
 
@@ -684,6 +690,7 @@ class CoderDbcGui(ttk.Window):
 
         # Start with a flat (one group per message) layout
         self._groups = {msg.name: [msg] for msg in self._messages}
+        self._group_aliases.clear()
         self._populate_tree()
         self._update_summary()
         self._log(f"Loaded {len(self._messages)} message(s).", tag="success")
@@ -699,6 +706,7 @@ class CoderDbcGui(ttk.Window):
 
     def _populate_tree(self) -> None:
         """Rebuild the entire Treeview from *self._groups*, respecting the search filter."""
+        self._cancel_group_rename()
         self._tree.delete(*self._tree.get_children())
         self._tree_items.clear()
 
@@ -727,9 +735,10 @@ class CoderDbcGui(ttk.Window):
                 min_id = min(m.frame_id for m in visible)
                 total_sigs = sum(len(m.signals) for m in visible)
                 g_iid = f"group::{group_name}"
+                display_name = self._group_aliases.get(group_name, group_name)
                 self._tree.insert(
                     "", END, iid=g_iid,
-                    values=(chk, f"▶  0x{min_id:03X}+  {group_name}  ({len(visible)} frames → 1 function set)", "", total_sigs, ""),
+                    values=(chk, f"▶  0x{min_id:03X}+  {display_name}  ({len(visible)} frames → 1 function set)", "", total_sigs, "✎ dbl-click to rename"),
                     open=False,
                     tags=("group",),
                 )
@@ -800,7 +809,98 @@ class CoderDbcGui(ttk.Window):
 
         self._update_summary()
 
-    def _toggle_group_expand(self, group_name: str) -> None:
+    def _on_tree_double_click(self, event: "tk.Event[ttk.Treeview]") -> None:
+        """Start an inline rename when the user double-clicks a group row's name cell."""
+        if self._tree.identify_region(event.x, event.y) != "cell":
+            return
+        iid = self._tree.identify_row(event.y)
+        if not iid or iid not in self._tree_items:
+            return
+        col = self._tree.identify_column(event.x)
+        if col != "#2":
+            return
+        kind, data = self._tree_items[iid]
+        if kind != "group":
+            return
+        self._start_group_rename(str(data))
+
+    def _start_group_rename(self, group_key: str) -> None:
+        """Overlay an Entry widget on the group row's name cell for inline editing."""
+        self._cancel_group_rename()  # cancel any previous rename in progress
+
+        g_iid = f"group::{group_key}"
+        bbox = self._tree.bbox(g_iid, "name")
+        if not bbox:
+            return  # row not visible
+        x, y, width, height = bbox
+
+        current_name = self._group_aliases.get(group_key, group_key)
+        var = tk.StringVar(value=current_name)
+        entry = ttk.Entry(self._tree, textvariable=var, font=("", 11, "bold"))
+        entry.place(x=x, y=y, width=width, height=height)
+        entry.focus_set()
+        entry.select_range(0, tk.END)
+
+        self._rename_entry = entry
+        self._rename_group_key = group_key
+
+        entry.bind("<Return>", lambda _e: self._confirm_group_rename())
+        entry.bind("<KP_Enter>", lambda _e: self._confirm_group_rename())
+        entry.bind("<Escape>", lambda _e: self._cancel_group_rename())
+        entry.bind("<FocusOut>", lambda _e: self._confirm_group_rename())
+
+    def _confirm_group_rename(self) -> None:
+        """Validate and apply the rename, then remove the entry widget."""
+        entry = self._rename_entry
+        group_key = self._rename_group_key
+        if entry is None or group_key is None:
+            return
+
+        new_name = entry.get().strip()
+        self._cancel_group_rename()  # destroy entry before any messagebox
+
+        if not new_name:
+            return  # empty name → silently cancel
+
+        # Check uniqueness: no other group may already display the same name
+        existing_names = {
+            self._group_aliases.get(k, k)
+            for k in self._groups
+            if k != group_key
+        }
+        if new_name in existing_names:
+            messagebox.showwarning(
+                "Name Already Used",
+                f'A group named "{new_name}" already exists.\nPlease choose a different name.',
+                parent=self,
+            )
+            return
+
+        self._group_aliases[group_key] = new_name
+
+        # Update the treeview row text in-place (no full repopulate needed)
+        g_iid = f"group::{group_key}"
+        if self._tree.exists(g_iid):
+            msgs = self._groups[group_key]
+            min_id = min(m.frame_id for m in msgs)
+            is_open = bool(self._tree.item(g_iid, "open"))
+            indicator = "▼" if is_open else "▶"
+            self._tree.set(
+                g_iid, "name",
+                f"{indicator}  0x{min_id:03X}+  {new_name}  ({len(msgs)} frames → 1 function set)",
+            )
+
+    def _cancel_group_rename(self) -> None:
+        """Discard the inline rename and remove the Entry widget."""
+        if self._rename_entry is not None:
+            try:
+                self._rename_entry.destroy()
+            except tk.TclError:
+                pass
+            self._rename_entry = None
+            self._rename_group_key = None
+
+
         """Flip the open/close state of a group row and update its ▶/▼ indicator."""
         g_iid = f"group::{group_name}"
         if not self._tree.exists(g_iid):
@@ -810,9 +910,10 @@ class CoderDbcGui(ttk.Window):
         is_open = bool(self._tree.item(g_iid, "open"))
         self._tree.item(g_iid, open=not is_open)
         indicator = "▼" if not is_open else "▶"
+        display_name = self._group_aliases.get(group_name, group_name)
         self._tree.set(
             g_iid, "name",
-            f"{indicator}  0x{min_id:03X}+  {group_name}  ({len(msgs)} frames → 1 function set)",
+            f"{indicator}  0x{min_id:03X}+  {display_name}  ({len(msgs)} frames → 1 function set)",
         )
 
     def _toggle_msg_expand(self, msg: "cantools.database.can.Message") -> None:
@@ -883,6 +984,7 @@ class CoderDbcGui(ttk.Window):
         if not self._messages:
             return
         self._groups = detect_groups(self._messages)
+        self._group_aliases.clear()
         self._populate_tree()
         n_groups = sum(1 for v in self._groups.values() if len(v) > 1)
         self._log(
@@ -893,6 +995,7 @@ class CoderDbcGui(ttk.Window):
         if not self._messages:
             return
         self._groups = {msg.name: [msg] for msg in self._messages}
+        self._group_aliases.clear()
         self._populate_tree()
 
     # ── Selection helpers ─────────────────────────────────────────────────────
