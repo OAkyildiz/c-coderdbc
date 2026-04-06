@@ -613,6 +613,11 @@ class CoderDbcGui(ttk.Window):
         self._load_config()
         self.protocol("WM_DELETE_WINDOW", self._on_close)
 
+        # Auto-reload last DBC file if it still exists on disk
+        last_path = self._dbc_path.get()
+        if last_path and Path(last_path).is_file():
+            self.after(100, lambda: self._load_dbc(last_path))
+
     # ── UI Construction ──────────────────────────────────────────────────────
 
     def _build_ui(self) -> None:
@@ -906,8 +911,12 @@ class CoderDbcGui(ttk.Window):
     # ── DBC loading ──────────────────────────────────────────────────────────
 
     def _browse_dbc(self) -> None:
-        docs = Path.home() / "Documents"
-        initial = str(docs) if docs.is_dir() else str(Path.home())
+        saved = self._dbc_path.get()
+        if saved and Path(saved).parent.is_dir():
+            initial = str(Path(saved).parent)
+        else:
+            docs = Path.home() / "Documents"
+            initial = str(docs) if docs.is_dir() else str(Path.home())
         path = filedialog.askopenfilename(
             title="Select DBC file",
             initialdir=initial,
