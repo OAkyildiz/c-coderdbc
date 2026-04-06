@@ -557,7 +557,7 @@ class CoderDbcGui(ttk.Window):
         filter_hdr.pack(fill=X, pady=(0, 4))
         ttk.Checkbutton(
             filter_hdr,
-            text="All",
+            text="",
             variable=self._opt_filter_master,
             command=self._on_filter_master_toggle,
             bootstyle="warning-round-toggle",
