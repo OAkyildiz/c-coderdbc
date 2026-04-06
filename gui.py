@@ -307,8 +307,8 @@ class CoderDbcGui(ttk.Window):
         super().__init__(
             title=self.APP_TITLE,
             themename="darkly",
-            size=(1200, 800),
-            minsize=(860, 600),
+            size=(1200, 1020),
+            minsize=(860, 800),
         )
 
         # ── Application variables ───────────────────────────────────────────
@@ -339,6 +339,23 @@ class CoderDbcGui(ttk.Window):
         # ── Group / bitshift options ─────────────────────────────────────────
         self._opt_expand_group_ids = tk.BooleanVar(value=False)
         self._bitshift_header      = tk.StringVar(value="")
+
+        # Ordered list used by the master toggle to iterate all filter vars.
+        self._filter_vars: List[tk.BooleanVar] = [
+            self._opt_skip_length,
+            self._opt_skip_extended,
+            self._opt_skip_cycle_time,
+            self._opt_skip_frame_names,
+            self._opt_skip_sig_names,
+            self._opt_skip_validate,
+            self._opt_skip_choices,
+            self._opt_expand_group_ids,
+        ]
+        # Master toggle var: True = all on, False = all off (no tri-state var needed).
+        self._opt_filter_master = tk.BooleanVar(value=False)
+        # Keep master in sync whenever any individual filter changes.
+        for _v in self._filter_vars:
+            _v.trace_add("write", lambda *_: self._sync_filter_master())
 
         # ── Internal state ──────────────────────────────────────────────────
         self._db: Optional[cantools.database.Database] = None
@@ -536,9 +553,16 @@ class CoderDbcGui(ttk.Window):
         ttk.Separator(parent).pack(fill=X, pady=8)
 
         # ── Output filter ────────────────────────────────────────────────────
-        ttk.Label(parent, text="Output Filter", font=("", 10, "bold")).pack(
-            anchor=W, pady=(0, 4)
-        )
+        filter_hdr = ttk.Frame(parent)
+        filter_hdr.pack(fill=X, pady=(0, 4))
+        ttk.Label(filter_hdr, text="Output Filter", font=("", 10, "bold")).pack(side=LEFT)
+        ttk.Checkbutton(
+            filter_hdr,
+            text="All",
+            variable=self._opt_filter_master,
+            command=self._on_filter_master_toggle,
+            bootstyle="warning-round-toggle",
+        ).pack(side=RIGHT)
 
         filter_opts = [
             (self._opt_skip_length,      "Skip LENGTH #defines"),
@@ -618,6 +642,20 @@ class CoderDbcGui(ttk.Window):
         ttk.Button(
             parent, text="Clear Log", command=self._clear_log, bootstyle="secondary-outline"
         ).pack(anchor=E, pady=4)
+
+    # ── Output filter master toggle ───────────────────────────────────────────
+
+    def _on_filter_master_toggle(self) -> None:
+        """Set all individual filter vars to match the master toggle."""
+        state = self._opt_filter_master.get()
+        for v in self._filter_vars:
+            v.set(state)
+
+    def _sync_filter_master(self) -> None:
+        """Keep the master toggle in sync with the individual filter states."""
+        all_on = all(v.get() for v in self._filter_vars)
+        # Update without re-triggering traces that call back here.
+        self._opt_filter_master.set(all_on)
 
     # ── DBC loading ──────────────────────────────────────────────────────────
 
