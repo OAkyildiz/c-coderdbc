@@ -555,14 +555,14 @@ class CoderDbcGui(ttk.Window):
         # ── Output filter ────────────────────────────────────────────────────
         filter_hdr = ttk.Frame(parent)
         filter_hdr.pack(fill=X, pady=(0, 4))
-        ttk.Label(filter_hdr, text="Output Filter", font=("", 10, "bold")).pack(side=LEFT)
         ttk.Checkbutton(
             filter_hdr,
             text="All",
             variable=self._opt_filter_master,
             command=self._on_filter_master_toggle,
             bootstyle="warning-round-toggle",
-        ).pack(side=RIGHT)
+        ).pack(side=LEFT)
+        ttk.Label(filter_hdr, text="Output filters", font=("", 10, "bold")).pack(side=LEFT, padx=(6, 0))
 
         filter_opts = [
             (self._opt_skip_length,      "Skip LENGTH #defines"),
