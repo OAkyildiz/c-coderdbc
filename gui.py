@@ -86,10 +86,14 @@ def _strip_section(text: str, section_comment: str) -> str:
     The entire block (comment + defines + trailing blank line) is replaced
     with a single blank line so surrounding sections remain readable.
 
-    This relies on the fixed structure of ``cantools.database.can.c_source``
-    HEADER_FMT where every section ends with exactly one blank line.
+    The pattern handles sections that contain internal blank lines, such as
+    the ``Signal choices.`` section when a message has multiple signals with
+    choices (cantools emits a blank line between each signal's group of choice
+    defines).  Matching stops at the opening ``/* `` of the next section so
+    no unrelated content is consumed.
     """
-    pattern = rf'/\* {re.escape(section_comment)} \*/\n(?:[^\n]+\n)*\n'
+    # Stop matching when the next line begins another /* comment */ section.
+    pattern = rf'/\* {re.escape(section_comment)} \*/\n(?:(?!/\* ).*\n|\n)*'
     return re.sub(pattern, '\n', text)
 
 
@@ -372,6 +376,55 @@ def _replace_identifier_prefix(
     return header, source
 
 
+def _rename_grouped_message_prefix(
+    header: str,
+    source: str,
+    groups: Dict[str, List],
+    selected_names: Set[str],
+) -> Tuple[str, str]:
+    """Rename the representative message's identifier prefix to the group key.
+
+    After the drv-name strip, grouped messages still carry the representative
+    message's snake-case name as a prefix::
+
+        ars_obj_00_dist_x_encode       (group key: ARS_Obj, rep: ARS_Obj_00)
+
+    This pass replaces the representative-message segment with the group key::
+
+        ars_obj_dist_x_encode
+
+    Only applied to genuine groups (2+ messages) where the group key's
+    snake-case name differs from the representative's.  String literals
+    like ``"ARS_Obj_00"`` are unaffected because they use the original
+    mixed-case spelling, which does not match the all-lower / all-upper
+    identifier patterns.
+    """
+    for group_key, msgs in groups.items():
+        if len(msgs) < 2:
+            continue
+        rep = next((m for m in msgs if m.name in selected_names), None)
+        if rep is None:
+            continue
+
+        msg_lower = _ct_snake(rep.name)     # e.g. "ars_obj_00"
+        group_lower = _ct_snake(group_key)  # e.g. "ars_obj"
+
+        if msg_lower == group_lower:
+            continue  # representative name already matches group key
+
+        msg_upper = msg_lower.upper()
+        group_upper = group_lower.upper()
+
+        # Replace identifier segments that carry the representative's name.
+        # The trailing "_" avoids partial word matches.
+        header = header.replace(msg_lower + "_", group_lower + "_")
+        header = header.replace(msg_upper + "_", group_upper + "_")
+        source = source.replace(msg_lower + "_", group_lower + "_")
+        source = source.replace(msg_upper + "_", group_upper + "_")
+
+    return header, source
+
+
 # ── Auto-grouping ──────────────────────────────────────────────────────────────
 
 def detect_groups(
@@ -381,14 +434,16 @@ def detect_groups(
     """
     Detect groups of similarly-named messages.
 
-    Messages whose names match ``<prefix><digits>`` (with an optional
-    trailing underscore before the digits) are placed in a group named
-    ``<prefix>``.  Groups with fewer than *min_size* members are kept as
-    individual entries.
+    Messages whose names end with a numeric suffix (``<prefix>_?<digits>``,
+    e.g. ``ARS_Obj_00`` … ``ARS_Obj_105``) or a single-character alphabetic
+    suffix after an underscore (``<prefix>_<letter>``, e.g. ``Name_k`` …
+    ``Name_n``) are placed in a group named ``<prefix>``.  Groups with fewer
+    than *min_size* members are kept as individual entries.
 
     Returns a plain dict: ``group_name → [Message, …]``.
     """
-    _NUM_SUFFIX = re.compile(r"^(.*?)_?(\d+)$")
+    _NUM_SUFFIX   = re.compile(r"^(.*?)_?(\d+)$")
+    _ALPHA_SUFFIX = re.compile(r"^(.+?)_([a-zA-Z])$")
     bucket: Dict[str, List] = defaultdict(list)
 
     for msg in messages:
@@ -397,7 +452,11 @@ def detect_groups(
             prefix = m.group(1).rstrip("_") or msg.name
             bucket[prefix].append(msg)
         else:
-            bucket[msg.name].append(msg)
+            m = _ALPHA_SUFFIX.match(msg.name)
+            if m:
+                bucket[m.group(1)].append(msg)
+            else:
+                bucket[msg.name].append(msg)
 
     groups: Dict[str, List] = {}
     for prefix, msgs in bucket.items():
@@ -704,7 +763,7 @@ class CoderDbcGui(ttk.Window):
             (self._opt_skip_validate,    "Skip validate functions (is_in_range)"),
             (self._opt_skip_choices,     "Skip signal choices macros (_CHOICE)"),
             (self._opt_expand_group_ids, "Expand groups: emit frame ID macros for all grouped messages"),
-            (self._opt_strip_sig_suffix, "Strip redundant signal suffix for groups (e.g. ars_obj_00_dist_x_obj_00_encode → ars_obj_00_dist_x_encode)"),
+            (self._opt_strip_sig_suffix, "Strip redundant signal suffix for groups (e.g. ars_obj_dist_x_obj_00_encode → ars_obj_dist_x_encode)"),
         ]
         for var, label in filter_opts:
             ttk.Checkbutton(
@@ -1271,9 +1330,17 @@ class CoderDbcGui(ttk.Window):
                 header, source, drv_name, ""
             )
 
+            # Post-process: for grouped messages replace the representative
+            # message's name segment with the group key so identifiers use the
+            # common prefix rather than the specific instance.
+            # e.g. ars_obj_00_dist_x_encode → ars_obj_dist_x_encode
+            header, source = _rename_grouped_message_prefix(
+                header, source, groups, selected_names
+            )
+
             # Post-process: strip redundant signal suffix for grouped messages
             # (e.g. every signal in ARS_Obj_00 ends with _Obj_00 → strip it so
-            # ars_obj_00_dist_x_obj_00_encode becomes ars_obj_00_dist_x_encode).
+            # ars_obj_dist_x_obj_00_encode becomes ars_obj_dist_x_encode).
             if self._opt_strip_sig_suffix.get():
                 header, source = _strip_redundant_signal_suffixes(
                     header, source, groups, selected_names
