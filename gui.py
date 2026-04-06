@@ -704,7 +704,7 @@ class CoderDbcGui(ttk.Window):
             (self._opt_skip_validate,    "Skip validate functions (is_in_range)"),
             (self._opt_skip_choices,     "Skip signal choices macros (_CHOICE)"),
             (self._opt_expand_group_ids, "Expand groups: emit frame ID macros for all grouped messages"),
-            (self._opt_strip_sig_suffix, "Strip redundant identifiers for groups: use sym_prefix only (e.g. ars_dist_x_encode)"),
+            (self._opt_strip_sig_suffix, "Strip redundant signal suffix for groups (e.g. ars_obj_00_dist_x_obj_00_encode → ars_obj_00_dist_x_encode)"),
         ]
         for var, label in filter_opts:
             ttk.Checkbutton(
@@ -1264,23 +1264,18 @@ class CoderDbcGui(ttk.Window):
                 use_round=self._opt_use_round.get(),
             )
 
-            # Post-process: replace identifier prefix if the user specified one
-            # different from the driver name (or blank = strip entirely).
-            if sym_prefix != drv_name:
-                header, source = _replace_identifier_prefix(
-                    header, source, drv_name, sym_prefix
-                )
+            # Post-process: always strip the cantools database/driver name prefix
+            # so the message/frame name becomes the outermost identifier namespace.
+            # e.g. ars_radar_ars_obj_00_dist_x_encode → ars_obj_00_dist_x_encode
+            header, source = _replace_identifier_prefix(
+                header, source, drv_name, ""
+            )
 
-            # Post-process: strip common signal suffix and message-name segment
-            # for grouped messages.  Two passes:
-            #  1. signal suffix  – e.g. _obj_00 on struct members / signal macros
-            #  2. message prefix – e.g. ars_obj_00_ between sym_prefix and signal
-            # Result: <pfx>_dist_x_encode instead of <pfx>_ars_obj_00_dist_x_obj_00_encode
+            # Post-process: strip redundant signal suffix for grouped messages
+            # (e.g. every signal in ARS_Obj_00 ends with _Obj_00 → strip it so
+            # ars_obj_00_dist_x_obj_00_encode becomes ars_obj_00_dist_x_encode).
             if self._opt_strip_sig_suffix.get():
                 header, source = _strip_redundant_signal_suffixes(
-                    header, source, groups, selected_names
-                )
-                header, source = _strip_grouped_message_name_prefix(
                     header, source, groups, selected_names
                 )
 
@@ -1288,7 +1283,7 @@ class CoderDbcGui(ttk.Window):
             # before any section-strip passes (strips will then apply uniformly).
             if self._opt_expand_group_ids.get():
                 header = _inject_group_frame_ids(
-                    header, groups, selected_names, sym_prefix
+                    header, groups, selected_names, ""
                 )
 
             # Post-process: strip disabled header sections
