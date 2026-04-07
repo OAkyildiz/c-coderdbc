@@ -98,8 +98,8 @@ def _strip_section(text: str, section_comment: str) -> str:
     defines).  Matching stops at the opening ``/* `` of the next section so
     no unrelated content is consumed.
     """
-    # Stop matching when the next line begins another /* comment */ section.
-    pattern = rf'/\* {re.escape(section_comment)} \*/\n(?:(?!/\* ).*\n|\n)*'
+    # Stop matching when the next line begins any /* comment (incl. /** doxygen).
+    pattern = rf'/\* {re.escape(section_comment)} \*/\n(?:(?!/\*).*\n|\n)*'
     return re.sub(pattern, '\n', text)
 
 
