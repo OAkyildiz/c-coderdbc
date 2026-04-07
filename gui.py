@@ -291,8 +291,14 @@ def _strip_message_name_prefix(
         name_lower = _ct_snake(group_key)
         name_upper = name_lower.upper()
 
-        header = header.replace(name_lower + "_", "").replace(name_upper + "_", "")
-        source = source.replace(name_lower + "_", "").replace(name_upper + "_", "")
+        # Use a lookbehind so only identifier-leading occurrences are removed,
+        # not the same token appearing inside a signal name (e.g. obj_ inside obj_sts).
+        pat_lower = re.compile(r"(?<![a-zA-Z0-9_])" + re.escape(name_lower) + r"_")
+        pat_upper = re.compile(r"(?<![a-zA-Z0-9_])" + re.escape(name_upper) + r"_")
+        header = pat_lower.sub("", header)
+        header = pat_upper.sub("", header)
+        source = pat_lower.sub("", source)
+        source = pat_upper.sub("", source)
 
     return header, source
 
@@ -505,12 +511,13 @@ def _rename_grouped_message_prefix(
         msg_upper = msg_lower.upper()
         group_upper = group_lower.upper()
 
-        # Replace identifier segments that carry the representative's name.
-        # The trailing "_" avoids partial word matches.
-        header = header.replace(msg_lower + "_", group_lower + "_")
-        header = header.replace(msg_upper + "_", group_upper + "_")
-        source = source.replace(msg_lower + "_", group_lower + "_")
-        source = source.replace(msg_upper + "_", group_upper + "_")
+        # Use lookbehind so only identifier-leading occurrences are renamed.
+        pat_lower = re.compile(r"(?<![a-zA-Z0-9_])" + re.escape(msg_lower) + r"_")
+        pat_upper = re.compile(r"(?<![a-zA-Z0-9_])" + re.escape(msg_upper) + r"_")
+        header = pat_lower.sub(group_lower + "_", header)
+        header = pat_upper.sub(group_upper + "_", header)
+        source = pat_lower.sub(group_lower + "_", source)
+        source = pat_upper.sub(group_upper + "_", source)
 
     return header, source
 
@@ -758,7 +765,7 @@ class CoderDbcGui(ttk.Window):
             anchor=W,
             command=self._toggle_all_heading,
         )
-        self._tree.heading("fid", text="fid", anchor=CENTER)
+        self._tree.heading("fid", text="FN", anchor=CENTER)
         self._tree.heading("id", text="ID (hex)")
         self._tree.heading("name", text="Name")
         self._tree.heading("dlc", text="DLC")
