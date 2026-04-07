@@ -261,6 +261,55 @@ def _strip_grouped_message_name_prefix(
     return header, source
 
 
+def _strip_message_name_prefix(
+    header: str,
+    source: str,
+    groups: Dict[str, List],
+    selected_names: Set[str],
+    frame_id_prefix_items: Set[str],
+) -> Tuple[str, str]:
+    """Strip the message/group name prefix from all generated identifiers.
+
+    This is the per-message generalisation of
+    :func:`_strip_grouped_message_name_prefix`.  While that helper only acts on
+    genuine multi-message groups, this function applies to **every** selected
+    message or group — including single-message entries.
+
+    After the earlier prefix-normalisation steps, each group or single message
+    contributes identifiers of the form::
+
+        <group_or_msg_name>_<signal_name>_encode
+        <GROUP_OR_MSG_NAME>_<SIGNAL_NAME>_ENCODE_MAX
+
+    This pass removes the leading ``<group_or_msg_name>_`` segment so only the
+    signal-derived part remains::
+
+        <signal_name>_encode
+        <SIGNAL_NAME>_ENCODE_MAX
+
+    Entries that already had the frame-ID prefix applied (i.e. their group key
+    is in *frame_id_prefix_items*) are skipped — their prefix is already the
+    hex frame ID, not the message name.
+
+    Mixed-case string literals are unaffected because they use the original
+    capitalisation, which does not match the all-lower / all-upper patterns.
+    """
+    for group_key, msgs in groups.items():
+        if group_key in frame_id_prefix_items:
+            continue  # fid prefix was already applied; leave those identifiers alone
+        rep = next((m for m in msgs if m.name in selected_names), None)
+        if rep is None:
+            continue
+
+        name_lower = _ct_snake(group_key)
+        name_upper = name_lower.upper()
+
+        header = header.replace(name_lower + "_", "").replace(name_upper + "_", "")
+        source = source.replace(name_lower + "_", "").replace(name_upper + "_", "")
+
+    return header, source
+
+
 def _inject_group_frame_ids(
     header: str,
     groups: Dict[str, List],
@@ -610,9 +659,10 @@ class CoderDbcGui(ttk.Window):
         self._opt_skip_choices     = tk.BooleanVar(value=False)
 
         # ── Group / bitshift options ─────────────────────────────────────────
-        self._opt_expand_group_ids   = tk.BooleanVar(value=False)
-        self._opt_strip_sig_suffix   = tk.BooleanVar(value=True)
-        self._bitshift_header        = tk.StringVar(value="")
+        self._opt_expand_group_ids    = tk.BooleanVar(value=False)
+        self._opt_strip_sig_suffix    = tk.BooleanVar(value=True)
+        self._opt_strip_msg_name_prefix = tk.BooleanVar(value=False)
+        self._bitshift_header         = tk.StringVar(value="")
 
         # Per-group/message frame-ID prefix: set of group keys whose identifiers
         # should be prefixed with the hex frame-ID (e.g. x400_) instead of the
@@ -873,6 +923,7 @@ class CoderDbcGui(ttk.Window):
             (self._opt_skip_choices,     "Skip signal choices macros (_CHOICE)"),
             (self._opt_expand_group_ids, "Expand groups: emit frame ID macros for all grouped messages"),
             (self._opt_strip_sig_suffix, "Strip redundant signal suffix in groups"),
+            (self._opt_strip_msg_name_prefix, "Strip message name from signal symbols  (e.g. msg_sig_encode → sig_encode)"),
         ]
         for var, label in filter_opts:
             ttk.Checkbutton(
@@ -1519,6 +1570,14 @@ class CoderDbcGui(ttk.Window):
                     header, source, groups, selected_names
                 )
 
+            # Post-process: strip message/group name prefix from signal identifiers
+            # (e.g. ars_obj_status_vehicle_platform_sig_decode → vehicle_platform_sig_decode).
+            # Groups/messages with a hex frame-ID prefix are left untouched.
+            if self._opt_strip_msg_name_prefix.get():
+                header, source = _strip_message_name_prefix(
+                    header, source, groups, selected_names, frame_id_prefix_items
+                )
+
             # Post-process: inject frame-ID macros for all selected grouped messages
             # before any section-strip passes (strips will then apply uniformly).
             if self._opt_expand_group_ids.get():
@@ -1609,8 +1668,9 @@ class CoderDbcGui(ttk.Window):
             "opt_skip_validate":    self._opt_skip_validate.get(),
             "opt_skip_choices":     self._opt_skip_choices.get(),
             # group / bitshift options
-            "opt_expand_group_ids": self._opt_expand_group_ids.get(),
-            "opt_strip_sig_suffix": self._opt_strip_sig_suffix.get(),
+            "opt_expand_group_ids":       self._opt_expand_group_ids.get(),
+            "opt_strip_sig_suffix":       self._opt_strip_sig_suffix.get(),
+            "opt_strip_msg_name_prefix":  self._opt_strip_msg_name_prefix.get(),
             # last-used DBC file (so it can be offered as a default next time)
             "dbc_path":           self._dbc_path.get(),
         }
@@ -1653,8 +1713,9 @@ class CoderDbcGui(ttk.Window):
             "opt_skip_sig_names":   self._opt_skip_sig_names,
             "opt_skip_validate":    self._opt_skip_validate,
             "opt_skip_choices":     self._opt_skip_choices,
-            "opt_expand_group_ids": self._opt_expand_group_ids,
-            "opt_strip_sig_suffix": self._opt_strip_sig_suffix,
+            "opt_expand_group_ids":       self._opt_expand_group_ids,
+            "opt_strip_sig_suffix":        self._opt_strip_sig_suffix,
+            "opt_strip_msg_name_prefix":   self._opt_strip_msg_name_prefix,
         }
 
         for key, var in str_vars.items():
