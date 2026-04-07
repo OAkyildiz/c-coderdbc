@@ -73,6 +73,9 @@ CHECKBOX_ON = "☑"
 CHECKBOX_OFF = "☐"
 CHECKBOX_PARTIAL = "⊟"
 
+FID_ON  = "⬤"   # frame-ID prefix enabled
+FID_OFF = "○"   # frame-ID prefix disabled
+
 GROUP_MIN_SIZE = 2       # Minimum messages required to form an auto-group
 APP_VERSION = "1.0"
 
@@ -743,7 +746,7 @@ class CoderDbcGui(ttk.Window):
         self.style.configure("Treeview", font=("", 11))
         self.style.configure("Treeview.Heading", font=("", 10, "bold"))
 
-        cols = ("sel", "name", "dlc", "signals", "transmitter")
+        cols = ("sel", "fid", "id", "name", "dlc", "signals", "transmitter")
         self._tree = ttk.Treeview(
             tree_container,
             columns=cols,
@@ -756,16 +759,20 @@ class CoderDbcGui(ttk.Window):
             anchor=W,
             command=self._toggle_all_heading,
         )
-        self._tree.heading("name", text="ID (hex)   Name")
+        self._tree.heading("fid", text="fid", anchor=CENTER)
+        self._tree.heading("id", text="ID (hex)")
+        self._tree.heading("name", text="Name")
         self._tree.heading("dlc", text="DLC")
         self._tree.heading("signals", text="Signals")
         self._tree.heading("transmitter", text="Transmitter")
 
-        self._tree.column("sel", width=32, minwidth=32, anchor=W, stretch=False)
-        self._tree.column("name", width=310, minwidth=180)
-        self._tree.column("dlc", width=50, anchor=CENTER, minwidth=40)
-        self._tree.column("signals", width=60, anchor=CENTER, minwidth=40)
-        self._tree.column("transmitter", width=110, anchor=CENTER, minwidth=70)
+        self._tree.column("sel",         width=32,  minwidth=32,  anchor=W,      stretch=False)
+        self._tree.column("fid",         width=34,  minwidth=34,  anchor=CENTER, stretch=False)
+        self._tree.column("id",          width=90,  minwidth=70,  anchor=W,      stretch=False)
+        self._tree.column("name",        width=240, minwidth=140)
+        self._tree.column("dlc",         width=50,  minwidth=40,  anchor=CENTER)
+        self._tree.column("signals",     width=60,  minwidth=40,  anchor=CENTER)
+        self._tree.column("transmitter", width=110, minwidth=70,  anchor=CENTER)
 
         vsb = ttk.Scrollbar(tree_container, orient=VERTICAL, command=self._tree.yview)
         hsb = ttk.Scrollbar(tree_container, orient=HORIZONTAL, command=self._tree.xview)
@@ -779,7 +786,6 @@ class CoderDbcGui(ttk.Window):
 
         self._tree.bind("<ButtonRelease-1>", self._on_tree_click)
         self._tree.bind("<Double-Button-1>", self._on_tree_double_click)
-        self._tree.bind("<Button-3>", self._on_tree_right_click)
 
     # ── Right panel — Settings + Log ─────────────────────────────────────────
 
@@ -1027,9 +1033,12 @@ class CoderDbcGui(ttk.Window):
                 )
                 total_sigs = sum(len(m.signals) for m in visible)
                 g_iid = f"group::{group_name}"
+                fid_val = FID_ON if group_name in self._frame_id_prefix_items else FID_OFF
                 self._tree.insert(
                     "", END, iid=g_iid,
-                    values=(chk, self._group_name_cell_text(group_name, "▶", visible), "", total_sigs, "✎ dbl-click to rename"),
+                    values=(chk, fid_val, f"0x{min(m.frame_id for m in visible):03X}+",
+                            self._group_name_cell_text(group_name, "▶", visible),
+                            "", total_sigs, "✎ dbl-click to rename"),
                     open=False,
                     tags=("group",),
                 )
@@ -1049,12 +1058,19 @@ class CoderDbcGui(ttk.Window):
         m_iid = f"msg::{msg.frame_id}"
         sender = msg.senders[0] if msg.senders else ""
         has_sigs = bool(msg.signals)
-        prefix = "▶  " if has_sigs else "   "
-        # Show [fid] marker only for top-level (single-message group) rows
-        fid_tag = "  [fid]" if (not parent_iid and msg.name in self._frame_id_prefix_items) else ""
+        expand_indicator = "▶  " if has_sigs else "   "
+        # fid column: only shown for top-level (non-grouped) message rows
+        group_key = next(
+            (k for k, v in self._groups.items() if any(m.name == msg.name for m in v)),
+            msg.name,
+        )
+        fid_val = FID_ON if group_key in self._frame_id_prefix_items else FID_OFF
+        # fid toggle is irrelevant for messages inside a group (group key controls it)
+        fid_display = fid_val if not parent_iid else ""
         self._tree.insert(
             parent_iid, END, iid=m_iid,
-            values=(chk, f"{prefix}0x{msg.frame_id:03X}  {msg.name}{fid_tag}", msg.length, len(msg.signals), sender),
+            values=(chk, fid_display, f"{expand_indicator}0x{msg.frame_id:03X}", msg.name,
+                    msg.length, len(msg.signals), sender),
             open=False,
             tags=("msg",),
         )
@@ -1066,14 +1082,14 @@ class CoderDbcGui(ttk.Window):
             vt = "S" if sig.is_signed else "U"
             self._tree.insert(
                 m_iid, END, iid=s_iid,
-                values=("", f"    {sig.name}  [{sig.start}|{sig.length}]", bo, vt, ""),
+                values=("", "", "", f"    {sig.name}  [{sig.start}|{sig.length}]", bo, vt, ""),
                 tags=("signal",),
             )
 
     # ── Tree interaction ──────────────────────────────────────────────────────
 
     def _on_tree_click(self, event: "tk.Event[ttk.Treeview]") -> None:
-        """Handle clicks in the sel (checkbox) and name columns."""
+        """Handle clicks in the sel, fid, and name columns."""
         if self._tree.identify_region(event.x, event.y) != "cell":
             return
 
@@ -1082,12 +1098,30 @@ class CoderDbcGui(ttk.Window):
             return
 
         col = self._tree.identify_column(event.x)
-        if col not in ("#1", "#2"):
-            return
+        # col numbers: #1=sel, #2=fid, #3=id, #4=name, #5=dlc, #6=signals, #7=transmitter
 
         kind, data = self._tree_items[iid]
+
+        if col == "#2":
+            # fid column: toggle frame-ID prefix for this group/message
+            if kind == "signal":
+                return
+            if kind == "group":
+                self._toggle_frame_id_prefix(str(data))
+            elif kind == "msg":
+                msg = data  # type: ignore[assignment]
+                group_key = next(
+                    (k for k, v in self._groups.items() if any(m.name == msg.name for m in v)),  # type: ignore[union-attr]
+                    msg.name,  # type: ignore[union-attr]
+                )
+                self._toggle_frame_id_prefix(group_key)
+            return
+
+        if col not in ("#1", "#4"):
+            return
+
         if kind == "group":
-            if col == "#2":
+            if col == "#4":
                 # Name column click → expand/collapse the group
                 self._toggle_group_expand(str(data))
                 return
@@ -1095,7 +1129,7 @@ class CoderDbcGui(ttk.Window):
             self._toggle_group(str(data))
         elif kind == "msg":
             msg = data  # type: ignore[assignment]
-            if col == "#2" and msg.signals:  # type: ignore[union-attr]
+            if col == "#4" and msg.signals:  # type: ignore[union-attr]
                 self._toggle_msg_expand(msg)  # type: ignore[arg-type]
                 return
             self._toggle_message(data)  # type: ignore[arg-type]
@@ -1110,47 +1144,12 @@ class CoderDbcGui(ttk.Window):
         if not iid or iid not in self._tree_items:
             return
         col = self._tree.identify_column(event.x)
-        if col != "#2":
+        if col != "#4":
             return
         kind, data = self._tree_items[iid]
         if kind != "group":
             return
         self._start_group_rename(str(data))
-
-    def _on_tree_right_click(self, event: "tk.Event[ttk.Treeview]") -> None:
-        """Show a context menu to toggle the frame-ID prefix for the clicked row."""
-        iid = self._tree.identify_row(event.y)
-        if not iid or iid not in self._tree_items:
-            return
-        kind, data = self._tree_items[iid]
-        if kind == "signal":
-            return
-
-        # Resolve the group key and the representative frame ID.
-        if kind == "group":
-            group_key = str(data)
-            msgs = self._groups.get(group_key, [])
-            rep = next((m for m in msgs if m.name in self._selected), msgs[0] if msgs else None)
-        else:
-            msg = data  # type: ignore[assignment]
-            # Find the group this message belongs to.
-            group_key = next(
-                (k for k, v in self._groups.items() if any(m.name == msg.name for m in v)),
-                msg.name,  # type: ignore[union-attr]
-            )
-            rep = msg  # type: ignore[assignment]
-
-        if rep is None:
-            return
-
-        enabled = group_key in self._frame_id_prefix_items
-        check = "✓  " if enabled else "      "
-        menu = tk.Menu(self, tearoff=0)
-        menu.add_command(
-            label=f"{check}Use frame-ID prefix  [0x{rep.frame_id:x}]",  # type: ignore[union-attr]
-            command=lambda gk=group_key: self._toggle_frame_id_prefix(gk),
-        )
-        menu.tk_popup(event.x_root, event.y_root)
 
     def _toggle_frame_id_prefix(self, group_key: str) -> None:
         """Enable or disable the frame-ID identifier prefix for *group_key*."""
@@ -1158,24 +1157,18 @@ class CoderDbcGui(ttk.Window):
             self._frame_id_prefix_items.discard(group_key)
         else:
             self._frame_id_prefix_items.add(group_key)
-        # Refresh the affected row(s) in the tree.
+        fid_val = FID_ON if group_key in self._frame_id_prefix_items else FID_OFF
+        # Refresh the fid column on the affected row.
         g_iid = f"group::{group_key}"
         if self._tree.exists(g_iid):
-            msgs = self._groups.get(group_key, [])
-            is_open = bool(self._tree.item(g_iid, "open"))
-            indicator = "▼" if is_open else "▶"
-            self._tree.set(g_iid, "name", self._group_name_cell_text(group_key, indicator, msgs))
+            self._tree.set(g_iid, "fid", fid_val)
         else:
             # Single-message top-level row
             msgs = self._groups.get(group_key, [])
             if msgs:
-                m = msgs[0]
-                m_iid = f"msg::{m.frame_id}"
+                m_iid = f"msg::{msgs[0].frame_id}"
                 if self._tree.exists(m_iid):
-                    is_open = bool(self._tree.item(m_iid, "open"))
-                    indicator = "▼  " if is_open else "▶  " if m.signals else "   "
-                    fid_tag = "  [fid]" if group_key in self._frame_id_prefix_items else ""
-                    self._tree.set(m_iid, "name", f"{indicator}0x{m.frame_id:03X}  {m.name}{fid_tag}")
+                    self._tree.set(m_iid, "fid", fid_val)
 
     def _start_group_rename(self, group_key: str) -> None:
         """Overlay an Entry widget on the group row's name cell for inline editing."""
@@ -1252,8 +1245,7 @@ class CoderDbcGui(ttk.Window):
     def _group_name_cell_text(self, group_key: str, indicator: str, msgs: list) -> str:
         """Return the formatted text for a group row's name cell."""
         display_name = self._group_aliases.get(group_key, group_key)
-        fid_tag = "  [fid]" if group_key in self._frame_id_prefix_items else ""
-        return f"{indicator}  0x{min(m.frame_id for m in msgs):03X}+  {display_name}  ({len(msgs)} frames → 1 function set){fid_tag}"
+        return f"{indicator}  {display_name}  ({len(msgs)} frames → 1 function set)"
 
     def _toggle_group_expand(self, group_name: str) -> None:
         """Flip the open/close state of a group row and update its ▶/▼ indicator."""
@@ -1274,8 +1266,7 @@ class CoderDbcGui(ttk.Window):
         is_open = bool(self._tree.item(m_iid, "open"))
         self._tree.item(m_iid, open=not is_open)
         indicator = "▼  " if not is_open else "▶  "
-        fid_tag = "  [fid]" if msg.name in self._frame_id_prefix_items else ""
-        self._tree.set(m_iid, "name", f"{indicator}0x{msg.frame_id:03X}  {msg.name}{fid_tag}")
+        self._tree.set(m_iid, "id", f"{indicator}0x{msg.frame_id:03X}")
 
     def _toggle_message(self, msg: "cantools.database.can.Message") -> None:
         if msg.name in self._selected:
