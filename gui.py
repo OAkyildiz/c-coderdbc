@@ -73,8 +73,8 @@ CHECKBOX_ON = "☑"
 CHECKBOX_OFF = "☐"
 CHECKBOX_PARTIAL = "⊟"
 
-FID_ON  = "⬤"   # frame-ID prefix enabled
-FID_OFF = "○"   # frame-ID prefix disabled
+FID_ON  = "⬤"   # strip frame name from signal symbols: enabled
+FID_OFF = "○"   # strip frame name from signal symbols: disabled
 
 GROUP_MIN_SIZE = 2       # Minimum messages required to form an auto-group
 APP_VERSION = "1.0"
@@ -266,37 +266,24 @@ def _strip_message_name_prefix(
     source: str,
     groups: Dict[str, List],
     selected_names: Set[str],
-    frame_id_prefix_items: Set[str],
+    strip_name_items: Set[str],
 ) -> Tuple[str, str]:
-    """Strip the message/group name prefix from all generated identifiers.
+    """Strip the message/group name prefix from signal identifiers for selected entries.
 
-    This is the per-message generalisation of
-    :func:`_strip_grouped_message_name_prefix`.  While that helper only acts on
-    genuine multi-message groups, this function applies to **every** selected
-    message or group — including single-message entries.
+    For each group or single message whose key is in *strip_name_items*, removes
+    the snake_case group/message name segment from all generated identifiers so
+    only the signal-derived part remains.  For example, if ``ARS_Obj_Status`` is
+    in *strip_name_items*::
 
-    After the earlier prefix-normalisation steps, each group or single message
-    contributes identifiers of the form::
+        ars_obj_status_vehicle_platform_obj_sts_decode  →  vehicle_platform_obj_sts_decode
 
-        <group_or_msg_name>_<signal_name>_encode
-        <GROUP_OR_MSG_NAME>_<SIGNAL_NAME>_ENCODE_MAX
-
-    This pass removes the leading ``<group_or_msg_name>_`` segment so only the
-    signal-derived part remains::
-
-        <signal_name>_encode
-        <SIGNAL_NAME>_ENCODE_MAX
-
-    Entries that already had the frame-ID prefix applied (i.e. their group key
-    is in *frame_id_prefix_items*) are skipped — their prefix is already the
-    hex frame ID, not the message name.
-
-    Mixed-case string literals are unaffected because they use the original
-    capitalisation, which does not match the all-lower / all-upper patterns.
+    Entries whose key is NOT in *strip_name_items* are left untouched.
+    Mixed-case string literals are unaffected (original capitalisation never
+    matches the all-lower / all-upper replacement patterns).
     """
     for group_key, msgs in groups.items():
-        if group_key in frame_id_prefix_items:
-            continue  # fid prefix was already applied; leave those identifiers alone
+        if group_key not in strip_name_items:
+            continue
         rep = next((m for m in msgs if m.name in selected_names), None)
         if rep is None:
             continue
@@ -528,42 +515,6 @@ def _rename_grouped_message_prefix(
     return header, source
 
 
-def _apply_frame_id_prefix(
-    header: str,
-    source: str,
-    groups: Dict[str, List],
-    selected_names: Set[str],
-    frame_id_prefix_items: Set[str],
-) -> Tuple[str, str]:
-    """Replace the group/message name prefix with a hex frame-ID prefix.
-
-    For groups/messages whose key is in *frame_id_prefix_items*, replaces the
-    group-key-derived identifier prefix with ``x{frame_id:x}_``.  For example,
-    if group key ``ARS_Obj`` has representative frame ID ``0x400``, every
-    identifier like ``ars_obj_dist_x_encode`` becomes ``x400_dist_x_encode``.
-
-    This is useful when signal names don't share the frame-name prefix and the
-    auto-grouped name would produce misleading identifiers.
-    """
-    for group_key, msgs in groups.items():
-        if group_key not in frame_id_prefix_items:
-            continue
-        rep = next((m for m in msgs if m.name in selected_names), None)
-        if rep is None:
-            continue
-
-        group_lower = _ct_snake(group_key)
-        group_upper = group_lower.upper()
-        fid_lower = f"x{rep.frame_id:x}"
-        fid_upper = fid_lower.upper()
-
-        header = header.replace(group_lower + "_", fid_lower + "_")
-        header = header.replace(group_upper + "_", fid_upper + "_")
-        source = source.replace(group_lower + "_", fid_lower + "_")
-        source = source.replace(group_upper + "_", fid_upper + "_")
-
-    return header, source
-
 
 # ── Auto-grouping ──────────────────────────────────────────────────────────────
 
@@ -661,13 +612,11 @@ class CoderDbcGui(ttk.Window):
         # ── Group / bitshift options ─────────────────────────────────────────
         self._opt_expand_group_ids    = tk.BooleanVar(value=False)
         self._opt_strip_sig_suffix    = tk.BooleanVar(value=True)
-        self._opt_strip_msg_name_prefix = tk.BooleanVar(value=False)
         self._bitshift_header         = tk.StringVar(value="")
 
-        # Per-group/message frame-ID prefix: set of group keys whose identifiers
-        # should be prefixed with the hex frame-ID (e.g. x400_) instead of the
-        # group name.  Toggled via right-click context menu on tree rows.
-        self._frame_id_prefix_items: Set[str] = set()
+        # Per-group/message set whose frame name should be stripped from signal
+        # symbols in the generated output.  Toggled via the fid column in the tree.
+        self._strip_name_items: Set[str] = set()
 
         # Ordered list used by the master toggle to iterate all filter vars.
         self._filter_vars: List[tk.BooleanVar] = [
@@ -923,7 +872,6 @@ class CoderDbcGui(ttk.Window):
             (self._opt_skip_choices,     "Skip signal choices macros (_CHOICE)"),
             (self._opt_expand_group_ids, "Expand groups: emit frame ID macros for all grouped messages"),
             (self._opt_strip_sig_suffix, "Strip redundant signal suffix in groups"),
-            (self._opt_strip_msg_name_prefix, "Strip message name from signal symbols  (e.g. msg_sig_encode → sig_encode)"),
         ]
         for var, label in filter_opts:
             ttk.Checkbutton(
@@ -1040,7 +988,7 @@ class CoderDbcGui(ttk.Window):
         # Start with a flat (one group per message) layout
         self._groups = {msg.name: [msg] for msg in self._messages}
         self._group_aliases.clear()
-        self._frame_id_prefix_items.clear()
+        self._strip_name_items.clear()
         self._populate_tree()
         self._update_summary()
         self._log(f"Loaded {len(self._messages)} message(s).", tag="success")
@@ -1084,7 +1032,7 @@ class CoderDbcGui(ttk.Window):
                 )
                 total_sigs = sum(len(m.signals) for m in visible)
                 g_iid = f"group::{group_name}"
-                fid_val = FID_ON if group_name in self._frame_id_prefix_items else FID_OFF
+                fid_val = FID_ON if group_name in self._strip_name_items else FID_OFF
                 self._tree.insert(
                     "", END, iid=g_iid,
                     values=(chk, fid_val, f"0x{min(m.frame_id for m in visible):03X}+",
@@ -1115,7 +1063,7 @@ class CoderDbcGui(ttk.Window):
             (k for k, v in self._groups.items() if any(m.name == msg.name for m in v)),
             msg.name,
         )
-        fid_val = FID_ON if group_key in self._frame_id_prefix_items else FID_OFF
+        fid_val = FID_ON if group_key in self._strip_name_items else FID_OFF
         # fid toggle is irrelevant for messages inside a group (group key controls it)
         fid_display = fid_val if not parent_iid else ""
         self._tree.insert(
@@ -1154,18 +1102,18 @@ class CoderDbcGui(ttk.Window):
         kind, data = self._tree_items[iid]
 
         if col == "#2":
-            # fid column: toggle frame-ID prefix for this group/message
+            # fid column: toggle per-frame stripping of the frame name from signal symbols
             if kind == "signal":
                 return
             if kind == "group":
-                self._toggle_frame_id_prefix(str(data))
+                self._toggle_strip_name(str(data))
             elif kind == "msg":
                 msg = data  # type: ignore[assignment]
                 group_key = next(
                     (k for k, v in self._groups.items() if any(m.name == msg.name for m in v)),  # type: ignore[union-attr]
                     msg.name,  # type: ignore[union-attr]
                 )
-                self._toggle_frame_id_prefix(group_key)
+                self._toggle_strip_name(group_key)
             return
 
         if col not in ("#1", "#4"):
@@ -1202,13 +1150,13 @@ class CoderDbcGui(ttk.Window):
             return
         self._start_group_rename(str(data))
 
-    def _toggle_frame_id_prefix(self, group_key: str) -> None:
-        """Enable or disable the frame-ID identifier prefix for *group_key*."""
-        if group_key in self._frame_id_prefix_items:
-            self._frame_id_prefix_items.discard(group_key)
+    def _toggle_strip_name(self, group_key: str) -> None:
+        """Enable or disable stripping the frame name from signal symbols for *group_key*."""
+        if group_key in self._strip_name_items:
+            self._strip_name_items.discard(group_key)
         else:
-            self._frame_id_prefix_items.add(group_key)
-        fid_val = FID_ON if group_key in self._frame_id_prefix_items else FID_OFF
+            self._strip_name_items.add(group_key)
+        fid_val = FID_ON if group_key in self._strip_name_items else FID_OFF
         # Refresh the fid column on the affected row.
         g_iid = f"group::{group_key}"
         if self._tree.exists(g_iid):
@@ -1497,11 +1445,11 @@ class CoderDbcGui(ttk.Window):
         # Snapshot mutable state so the worker thread sees a consistent view.
         groups_snapshot = {k: list(v) for k, v in self._groups.items()}
         selected_snapshot = set(self._selected)
-        frame_id_prefix_snapshot = set(self._frame_id_prefix_items)
+        strip_name_snapshot = set(self._strip_name_items)
         threading.Thread(
             target=self._run_generation,
             args=(representatives, out_dir, drv_name, sym_prefix,
-                  groups_snapshot, selected_snapshot, frame_id_prefix_snapshot),
+                  groups_snapshot, selected_snapshot, strip_name_snapshot),
             daemon=True,
         ).start()
 
@@ -1513,7 +1461,7 @@ class CoderDbcGui(ttk.Window):
         sym_prefix: str,
         groups: Dict[str, List["cantools.database.can.Message"]],
         selected_names: Set[str],
-        frame_id_prefix_items: Set[str],
+        strip_name_items: Set[str],
     ) -> None:
         try:
             # Build a filtered in-memory database from the selected messages.
@@ -1554,14 +1502,6 @@ class CoderDbcGui(ttk.Window):
                 header, source, groups, selected_names
             )
 
-            # Post-process: replace the group/message name prefix with the hex
-            # frame-ID for entries that have the frame-ID prefix option enabled.
-            # e.g. ars_obj_dist_x_encode → x400_dist_x_encode  (frame ID 0x400)
-            if frame_id_prefix_items:
-                header, source = _apply_frame_id_prefix(
-                    header, source, groups, selected_names, frame_id_prefix_items
-                )
-
             # Post-process: strip redundant signal suffix for grouped messages
             # (e.g. every signal in ARS_Obj_00 ends with _Obj_00 → strip it so
             # ars_obj_dist_x_obj_00_encode becomes ars_obj_dist_x_encode).
@@ -1570,12 +1510,12 @@ class CoderDbcGui(ttk.Window):
                     header, source, groups, selected_names
                 )
 
-            # Post-process: strip message/group name prefix from signal identifiers
-            # (e.g. ars_obj_status_vehicle_platform_sig_decode → vehicle_platform_sig_decode).
-            # Groups/messages with a hex frame-ID prefix are left untouched.
-            if self._opt_strip_msg_name_prefix.get():
+            # Post-process: per-frame strip of the message/group name prefix from
+            # signal identifiers, for frames toggled via the fid column in the tree.
+            # e.g. ars_obj_status_vehicle_platform_obj_sts_decode → vehicle_platform_obj_sts_decode
+            if strip_name_items:
                 header, source = _strip_message_name_prefix(
-                    header, source, groups, selected_names, frame_id_prefix_items
+                    header, source, groups, selected_names, strip_name_items
                 )
 
             # Post-process: inject frame-ID macros for all selected grouped messages
@@ -1670,7 +1610,6 @@ class CoderDbcGui(ttk.Window):
             # group / bitshift options
             "opt_expand_group_ids":       self._opt_expand_group_ids.get(),
             "opt_strip_sig_suffix":       self._opt_strip_sig_suffix.get(),
-            "opt_strip_msg_name_prefix":  self._opt_strip_msg_name_prefix.get(),
             # last-used DBC file (so it can be offered as a default next time)
             "dbc_path":           self._dbc_path.get(),
         }
@@ -1715,7 +1654,6 @@ class CoderDbcGui(ttk.Window):
             "opt_skip_choices":     self._opt_skip_choices,
             "opt_expand_group_ids":       self._opt_expand_group_ids,
             "opt_strip_sig_suffix":        self._opt_strip_sig_suffix,
-            "opt_strip_msg_name_prefix":   self._opt_strip_msg_name_prefix,
         }
 
         for key, var in str_vars.items():
