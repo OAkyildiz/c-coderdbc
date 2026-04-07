@@ -519,6 +519,19 @@ def _rename_grouped_message_prefix(
         source = pat_lower.sub(group_lower + "_", source)
         source = pat_upper.sub(group_upper + "_", source)
 
+        # When a signal name starts with the same prefix as the frame (e.g.
+        # signal ARS_Obj_Status_Obj_Sts in frame ARS_Obj_Status_0), the rename
+        # above produces a doubled prefix such as:
+        #   ars_obj_status_ars_obj_status_obj_sts_encode
+        # Collapse consecutive identical group-prefix tokens so downstream
+        # stripping (FN toggle) removes them correctly.
+        double_lower = group_lower + "_" + group_lower + "_"
+        double_upper = group_upper + "_" + group_upper + "_"
+        header = header.replace(double_lower, group_lower + "_")
+        header = header.replace(double_upper, group_upper + "_")
+        source = source.replace(double_lower, group_lower + "_")
+        source = source.replace(double_upper, group_upper + "_")
+
     return header, source
 
 
