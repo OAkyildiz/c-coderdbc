@@ -77,7 +77,7 @@ FID_ON  = "⬤"   # frame name IS present in signal symbols
 FID_OFF = "○"   # frame name is stripped from signal symbols
 
 GROUP_MIN_SIZE = 2       # Minimum messages required to form an auto-group
-APP_VERSION = "1.0"
+APP_VERSION = "1.2"
 
 CONFIG_PATH = Path.home() / ".c_coderdbc_gui.json"
 
