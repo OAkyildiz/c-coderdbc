@@ -73,8 +73,8 @@ CHECKBOX_ON = "☑"
 CHECKBOX_OFF = "☐"
 CHECKBOX_PARTIAL = "⊟"
 
-FID_ON  = "⬤"   # strip frame name from signal symbols: enabled
-FID_OFF = "○"   # strip frame name from signal symbols: disabled
+FID_ON  = "⬤"   # frame name IS present in signal symbols
+FID_OFF = "○"   # frame name is stripped from signal symbols
 
 GROUP_MIN_SIZE = 2       # Minimum messages required to form an auto-group
 APP_VERSION = "1.0"
@@ -1052,7 +1052,7 @@ class CoderDbcGui(ttk.Window):
                 )
                 total_sigs = sum(len(m.signals) for m in visible)
                 g_iid = f"group::{group_name}"
-                fid_val = FID_ON if group_name in self._strip_name_items else FID_OFF
+                fid_val = FID_OFF if group_name in self._strip_name_items else FID_ON
                 self._tree.insert(
                     "", END, iid=g_iid,
                     values=(chk, fid_val, f"0x{min(m.frame_id for m in visible):03X}+",
@@ -1083,8 +1083,7 @@ class CoderDbcGui(ttk.Window):
             (k for k, v in self._groups.items() if any(m.name == msg.name for m in v)),
             msg.name,
         )
-        fid_val = FID_ON if group_key in self._strip_name_items else FID_OFF
-        # fid toggle is irrelevant for messages inside a group (group key controls it)
+        fid_val = FID_OFF if group_key in self._strip_name_items else FID_ON
         fid_display = fid_val if not parent_iid else ""
         self._tree.insert(
             parent_iid, END, iid=m_iid,
@@ -1176,8 +1175,7 @@ class CoderDbcGui(ttk.Window):
             self._strip_name_items.discard(group_key)
         else:
             self._strip_name_items.add(group_key)
-        fid_val = FID_ON if group_key in self._strip_name_items else FID_OFF
-        # Refresh the fid column on the affected row.
+        fid_val = FID_OFF if group_key in self._strip_name_items else FID_ON
         g_iid = f"group::{group_key}"
         if self._tree.exists(g_iid):
             self._tree.set(g_iid, "fid", fid_val)
